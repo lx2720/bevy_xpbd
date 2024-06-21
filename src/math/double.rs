@@ -1,10 +1,14 @@
 use super::AdjustPrecision;
-use glam::*;
+use bevy_math::*;
 
 /// The floating point number type used by Bevy XPBD.
 pub type Scalar = f64;
+/// The PI/2 constant.
+pub const FRAC_PI_2: Scalar = std::f64::consts::FRAC_PI_2;
 /// The PI constant.
 pub const PI: Scalar = std::f64::consts::PI;
+/// The TAU constant.
+pub const TAU: Scalar = std::f64::consts::TAU;
 
 /// The vector type used by Bevy XPBD.
 #[cfg(feature = "2d")]
@@ -67,7 +71,7 @@ impl AdjustPrecision for DVec2 {
 impl AdjustPrecision for Quat {
     type Adjusted = Quaternion;
     fn adjust_precision(&self) -> Self::Adjusted {
-        self.as_f64()
+        self.as_dquat()
     }
 }
 

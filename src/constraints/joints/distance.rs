@@ -1,12 +1,20 @@
 //! [`DistanceJoint`] component.
 
 use crate::prelude::*;
-use bevy::prelude::*;
+use bevy::{
+    ecs::{
+        entity::{EntityMapper, MapEntities},
+        reflect::ReflectMapEntities,
+    },
+    prelude::*,
+};
 
 /// A distance joint keeps the attached bodies at a certain distance from each other while while allowing rotation around all axes.
 ///
 /// Distance joints can be useful for things like springs, muscles, and mass-spring networks.
-#[derive(Component, Clone, Copy, Debug, PartialEq)]
+#[derive(Component, Clone, Copy, Debug, PartialEq, Reflect)]
+#[cfg_attr(feature = "serialize", derive(serde::Serialize, serde::Deserialize))]
+#[reflect(MapEntities)]
 pub struct DistanceJoint {
     /// First entity constrained by the joint.
     pub entity1: Entity,
@@ -121,56 +129,49 @@ impl DistanceJoint {
         let world_r1 = body1.rotation.rotate(self.local_anchor1);
         let world_r2 = body2.rotation.rotate(self.local_anchor2);
 
-        // // Compute the positional difference
-        let mut delta_x =
-            (body1.current_position() + world_r1) - (body2.current_position() + world_r2);
+        // If min and max limits aren't specified, use rest length
+        // TODO: Remove rest length, just use min/max limits.
+        let limits = self
+            .length_limits
+            .unwrap_or(DistanceLimit::new(self.rest_length, self.rest_length));
 
-        // The current separation distance
-        let mut length = delta_x.length();
+        // Compute the direction and magnitude of the positional correction required
+        // to keep the bodies within a certain distance from each other.
+        let (dir, distance) = limits.compute_correction(
+            body1.current_position() + world_r1,
+            body2.current_position() + world_r2,
+        );
 
-        if let Some(limits) = self.length_limits {
-            if length < Scalar::EPSILON {
-                return Vector::ZERO;
-            }
-            delta_x += limits.compute_correction(
-                body1.current_position() + world_r1,
-                body2.current_position() + world_r2,
-            );
-            length = delta_x.length();
-        }
-
-        // The value of the constraint function. When this is zero, the
-        // constraint is satisfied, and the distance between the bodies is the
-        // rest length.
-        let c = length - self.rest_length;
-
-        // Avoid division by zero and unnecessary computation.
-        if length < Scalar::EPSILON || c.abs() < Scalar::EPSILON {
+        // Avoid division by zero and unnecessary computation
+        if distance.abs() < Scalar::EPSILON {
             return Vector::ZERO;
         }
 
-        // Normalized delta_x
-        let n = delta_x / length;
-
         // Compute generalized inverse masses (method from PositionConstraint)
-        let w1 = PositionConstraint::compute_generalized_inverse_mass(self, body1, world_r1, n);
-        let w2 = PositionConstraint::compute_generalized_inverse_mass(self, body2, world_r2, n);
+        let w1 = PositionConstraint::compute_generalized_inverse_mass(self, body1, world_r1, dir);
+        let w2 = PositionConstraint::compute_generalized_inverse_mass(self, body2, world_r2, dir);
         let w = [w1, w2];
 
         // Constraint gradients, i.e. how the bodies should be moved
         // relative to each other in order to satisfy the constraint
-        let gradients = [n, -n];
+        let gradients = [dir, -dir];
 
         // Compute Lagrange multiplier update, essentially the signed magnitude of the correction
-        let delta_lagrange =
-            self.compute_lagrange_update(self.lagrange, c, &gradients, &w, self.compliance, dt);
+        let delta_lagrange = self.compute_lagrange_update(
+            self.lagrange,
+            distance,
+            &gradients,
+            &w,
+            self.compliance,
+            dt,
+        );
         self.lagrange += delta_lagrange;
 
         // Apply positional correction (method from PositionConstraint)
-        self.apply_positional_correction(body1, body2, delta_lagrange, n, world_r1, world_r2);
+        self.apply_positional_correction(body1, body2, delta_lagrange, dir, world_r1, world_r2);
 
         // Return constraint force
-        self.compute_force(self.lagrange, n, dt)
+        self.compute_force(self.lagrange, dir, dt)
     }
 
     /// Sets the minimum and maximum distances between the attached bodies.
@@ -193,3 +194,10 @@ impl DistanceJoint {
 impl PositionConstraint for DistanceJoint {}
 
 impl AngularConstraint for DistanceJoint {}
+
+impl MapEntities for DistanceJoint {
+    fn map_entities<M: EntityMapper>(&mut self, entity_mapper: &mut M) {
+        self.entity1 = entity_mapper.map_entity(self.entity1);
+        self.entity2 = entity_mapper.map_entity(self.entity2);
+    }
+}

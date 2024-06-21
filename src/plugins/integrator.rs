@@ -27,11 +27,7 @@ impl Plugin for IntegratorPlugin {
                     .after(PhysicsStepSet::BroadPhase)
                     .before(PhysicsStepSet::Substeps),
             )
-            .add_systems(
-                clear_forces_and_impulses
-                    .after(PhysicsStepSet::Substeps)
-                    .before(PhysicsStepSet::Sleeping),
-            );
+            .add_systems(clear_forces_and_impulses.after(PhysicsStepSet::SpatialQuery));
     }
 }
 
@@ -54,8 +50,10 @@ type PosIntegrationComponents = (
 fn integrate_pos(
     mut bodies: Query<PosIntegrationComponents, Without<Sleeping>>,
     gravity: Res<Gravity>,
-    sub_dt: Res<SubDeltaTime>,
+    time: Res<Time>,
 ) {
+    let delta_secs = time.delta_seconds_adjusted();
+
     for (
         rb,
         pos,
@@ -82,7 +80,7 @@ fn integrate_pos(
         if rb.is_dynamic() {
             // Apply damping
             if let Some(damping) = lin_damping {
-                lin_vel.0 *= 1.0 / (1.0 + sub_dt.0 * damping.0);
+                lin_vel.0 *= 1.0 / (1.0 + delta_secs * damping.0);
             }
 
             let effective_mass = locked_axes.apply_to_vec(Vector::splat(mass.0));
@@ -92,10 +90,15 @@ fn integrate_pos(
             let gravitation_force =
                 effective_mass * gravity.0 * gravity_scale.map_or(1.0, |scale| scale.0);
             let external_forces = gravitation_force + external_force.force();
-            lin_vel.0 += sub_dt.0 * external_forces * effective_inv_mass;
+            let delta_lin_vel = delta_secs * external_forces * effective_inv_mass;
+            // avoid triggering bevy's change detection unnecessarily
+            if delta_lin_vel != Vector::ZERO {
+                lin_vel.0 += delta_lin_vel;
+            }
         }
-
-        translation.0 += locked_axes.apply_to_vec(sub_dt.0 * lin_vel.0);
+        if lin_vel.0 != Vector::ZERO {
+            translation.0 += locked_axes.apply_to_vec(delta_secs * lin_vel.0);
+        }
     }
 }
 
@@ -115,10 +118,9 @@ type RotIntegrationComponents = (
 /// Explicitly integrates the rotations and angular velocities of bodies taking only external torque into account.
 /// This acts as a prediction for the next rotations of the bodies.
 #[cfg(feature = "2d")]
-fn integrate_rot(
-    mut bodies: Query<RotIntegrationComponents, Without<Sleeping>>,
-    sub_dt: Res<SubDeltaTime>,
-) {
+fn integrate_rot(mut bodies: Query<RotIntegrationComponents, Without<Sleeping>>, time: Res<Time>) {
+    let delta_secs = time.delta_seconds_adjusted();
+
     for (
         rb,
         mut rot,
@@ -144,28 +146,37 @@ fn integrate_rot(
         if rb.is_dynamic() {
             // Apply damping
             if let Some(damping) = ang_damping {
-                ang_vel.0 *= 1.0 / (1.0 + sub_dt.0 * damping.0);
+                // avoid triggering bevy's change detection unnecessarily
+                if ang_vel.0 != 0.0 && damping.0 != 0.0 {
+                    ang_vel.0 *= 1.0 / (1.0 + delta_secs * damping.0);
+                }
             }
 
             let effective_inv_inertia = locked_axes.apply_to_rotation(inv_inertia.0);
 
             // Apply external torque
-            ang_vel.0 += sub_dt.0
+            let delta_ang_vel = delta_secs
                 * effective_inv_inertia
                 * (external_torque.torque() + external_force.torque());
+            // avoid triggering bevy's change detection unnecessarily
+            if delta_ang_vel != 0.0 {
+                ang_vel.0 += delta_ang_vel;
+            }
         }
-
-        *rot += Rotation::from_radians(locked_axes.apply_to_angular_velocity(sub_dt.0 * ang_vel.0));
+        // avoid triggering bevy's change detection unnecessarily
+        let delta = locked_axes.apply_to_angular_velocity(delta_secs * ang_vel.0);
+        if delta != 0.0 {
+            *rot += Rotation::from_radians(delta);
+        }
     }
 }
 
 /// Explicitly integrates the rotations and angular velocities of bodies taking only external torque into account.
 /// This acts as a prediction for the next rotations of the bodies.
 #[cfg(feature = "3d")]
-fn integrate_rot(
-    mut bodies: Query<RotIntegrationComponents, Without<Sleeping>>,
-    sub_dt: Res<SubDeltaTime>,
-) {
+fn integrate_rot(mut bodies: Query<RotIntegrationComponents, Without<Sleeping>>, time: Res<Time>) {
+    let delta_secs = time.delta_seconds_adjusted();
+
     for (
         rb,
         mut rot,
@@ -191,25 +202,35 @@ fn integrate_rot(
         if rb.is_dynamic() {
             // Apply damping
             if let Some(damping) = ang_damping {
-                ang_vel.0 *= 1.0 / (1.0 + sub_dt.0 * damping.0);
+                // avoid triggering bevy's change detection unnecessarily
+                if ang_vel.0 != Vector::ZERO && damping.0 != 0.0 {
+                    ang_vel.0 *= 1.0 / (1.0 + delta_secs * damping.0);
+                }
             }
 
             let effective_inertia = locked_axes.apply_to_rotation(inertia.rotated(&rot).0);
             let effective_inv_inertia = locked_axes.apply_to_rotation(inv_inertia.rotated(&rot).0);
 
             // Apply external torque
-            let delta_ang_vel = sub_dt.0
+            let delta_ang_vel = delta_secs
                 * effective_inv_inertia
                 * ((external_torque.torque() + external_force.torque())
                     - ang_vel.0.cross(effective_inertia * ang_vel.0));
-            ang_vel.0 += delta_ang_vel;
+            // avoid triggering bevy's change detection unnecessarily
+            if delta_ang_vel != Vector::ZERO {
+                ang_vel.0 += delta_ang_vel;
+            }
         }
 
         let q = Quaternion::from_vec4(ang_vel.0.extend(0.0)) * rot.0;
         let effective_dq = locked_axes
-            .apply_to_angular_velocity(sub_dt.0 * 0.5 * q.xyz())
-            .extend(sub_dt.0 * 0.5 * q.w);
-        rot.0 = (rot.0 + Quaternion::from_vec4(effective_dq)).normalize();
+            .apply_to_angular_velocity(delta_secs * 0.5 * q.xyz())
+            .extend(delta_secs * 0.5 * q.w);
+        // avoid triggering bevy's change detection unnecessarily
+        let delta = Quaternion::from_vec4(effective_dq);
+        if delta != Quaternion::from_xyzw(0.0, 0.0, 0.0, 0.0) {
+            rot.0 = (rot.0 + delta).normalize();
+        }
     }
 }
 
@@ -247,8 +268,17 @@ fn apply_impulses(mut bodies: Query<ImpulseQueryComponents, Without<Sleeping>>) 
         let effective_inv_mass = locked_axes.apply_to_vec(Vector::splat(inv_mass.0));
         let effective_inv_inertia = locked_axes.apply_to_rotation(inv_inertia.rotated(rotation).0);
 
-        lin_vel.0 += impulse.impulse() * effective_inv_mass;
-        ang_vel.0 += effective_inv_inertia * (ang_impulse.impulse() + impulse.angular_impulse());
+        // avoid triggering bevy's change detection unnecessarily
+        let delta_lin_vel = impulse.impulse() * effective_inv_mass;
+        let delta_ang_vel =
+            effective_inv_inertia * (ang_impulse.impulse() + impulse.angular_impulse());
+
+        if delta_lin_vel != Vector::ZERO {
+            lin_vel.0 += delta_lin_vel;
+        }
+        if delta_ang_vel != AngularVelocity::ZERO.0 {
+            ang_vel.0 += delta_ang_vel;
+        }
     }
 }
 
@@ -265,7 +295,10 @@ type ForceComponentsChanged = Or<(
     Changed<ExternalAngularImpulse>,
 )>;
 
-fn clear_forces_and_impulses(mut forces: Query<ForceComponents, ForceComponentsChanged>) {
+/// Responsible for clearing forces and impulses on bodies.
+///
+/// Runs in [`PhysicsSchedule`], after [`PhysicsStepSet::SpatialQuery`].
+pub fn clear_forces_and_impulses(mut forces: Query<ForceComponents, ForceComponentsChanged>) {
     for (mut force, mut torque, mut impulse, mut angular_ímpulse) in &mut forces {
         if !force.persistent {
             force.clear();

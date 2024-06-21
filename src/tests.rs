@@ -1,6 +1,12 @@
 use crate::prelude::*;
+#[cfg(all(
+    feature = "default-collider",
+    any(feature = "parry-f32", feature = "parry-f64")
+))]
 use approx::assert_relative_eq;
-use bevy::{log::LogPlugin, prelude::*, time::TimeUpdateStrategy, utils::Instant};
+use bevy::{
+    ecs::schedule::ScheduleBuildSettings, prelude::*, time::TimeUpdateStrategy, utils::Instant,
+};
 #[cfg(feature = "enhanced-determinism")]
 use insta::assert_debug_snapshot;
 use std::time::Duration;
@@ -23,12 +29,15 @@ macro_rules! setup_insta {
 
 fn create_app() -> App {
     let mut app = App::new();
-    app.add_plugins((
-        MinimalPlugins,
-        TransformPlugin,
-        LogPlugin::default(),
-        PhysicsPlugins::default(),
-    ));
+    app.add_plugins((MinimalPlugins, TransformPlugin, PhysicsPlugins::default()));
+    #[cfg(feature = "async-collider")]
+    {
+        app.add_plugins((
+            bevy::asset::AssetPlugin::default(),
+            bevy::scene::ScenePlugin,
+        ))
+        .init_resource::<Assets<Mesh>>();
+    }
     app.insert_resource(TimeUpdateStrategy::ManualInstant(Instant::now()));
     app
 }
@@ -43,7 +52,7 @@ fn tick_60_fps(app: &mut App) {
     app.update();
 }
 
-#[cfg(feature = "3d")]
+#[cfg(all(feature = "3d", feature = "default-collider"))]
 fn setup_cubes_simulation(mut commands: Commands) {
     let mut next_id = 0;
     // copied from "cubes" example
@@ -91,6 +100,43 @@ fn it_loads_plugin_without_errors() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
+#[cfg(all(
+    feature = "default-collider",
+    any(feature = "parry-f32", feature = "parry-f64")
+))]
+fn body_with_velocity_moves_on_first_frame() {
+    let mut app = create_app();
+
+    app.insert_resource(Gravity::ZERO);
+
+    app.add_systems(Startup, |mut commands: Commands| {
+        // move right at 1 unit per second
+        commands.spawn((
+            SpatialBundle::default(),
+            RigidBody::Dynamic,
+            LinearVelocity(Vector::X),
+            #[cfg(feature = "2d")]
+            MassPropertiesBundle::new_computed(&Collider::circle(0.5), 1.0),
+            #[cfg(feature = "3d")]
+            MassPropertiesBundle::new_computed(&Collider::sphere(0.5), 1.0),
+        ));
+    });
+
+    // one tick only.
+    tick_60_fps(&mut app);
+
+    let mut app_query = app.world.query::<(&Position, &RigidBody)>();
+
+    let (pos, _body) = app_query.single(&app.world);
+
+    assert!(pos.x > 0.0);
+}
+
+#[test]
+#[cfg(all(
+    feature = "default-collider",
+    any(feature = "parry-f32", feature = "parry-f64")
+))]
 fn body_with_velocity_moves() {
     let mut app = create_app();
 
@@ -102,6 +148,10 @@ fn body_with_velocity_moves() {
             SpatialBundle::default(),
             RigidBody::Dynamic,
             LinearVelocity(Vector::X),
+            #[cfg(feature = "2d")]
+            MassPropertiesBundle::new_computed(&Collider::circle(0.5), 1.0),
+            #[cfg(feature = "3d")]
+            MassPropertiesBundle::new_computed(&Collider::sphere(0.5), 1.0),
         ));
     });
 
@@ -134,6 +184,7 @@ fn body_with_velocity_moves() {
 }
 
 #[derive(Component, Clone, Copy, Debug, PartialEq, PartialOrd, Eq, Ord)]
+#[cfg(feature = "3d")]
 struct Id(usize);
 
 #[cfg(all(feature = "3d", feature = "enhanced-determinism"))]
@@ -159,7 +210,7 @@ fn cubes_simulation_is_deterministic_across_machines() {
     assert_debug_snapshot!(bodies);
 }
 
-#[cfg(feature = "3d")]
+#[cfg(all(feature = "3d", feature = "default-collider"))]
 #[test]
 fn cubes_simulation_is_locally_deterministic() {
     use itertools::Itertools;
@@ -190,4 +241,35 @@ fn cubes_simulation_is_locally_deterministic() {
     for (a, b) in (0..4).map(|_| run_cubes()).tuple_windows() {
         assert_eq!(a, b);
     }
+}
+
+#[test]
+fn no_ambiguity_errors() {
+    #[derive(ScheduleLabel, Clone, Debug, PartialEq, Eq, Hash)]
+    struct DeterministicSchedule;
+
+    let mut app = App::new();
+
+    app.add_plugins((MinimalPlugins, PhysicsPlugins::new(DeterministicSchedule)));
+
+    #[cfg(feature = "async-collider")]
+    {
+        app.add_plugins((
+            bevy::asset::AssetPlugin::default(),
+            bevy::scene::ScenePlugin,
+        ))
+        .init_resource::<Assets<Mesh>>();
+    }
+
+    app.edit_schedule(DeterministicSchedule, |s| {
+        s.set_build_settings(ScheduleBuildSettings {
+            ambiguity_detection: LogLevel::Error,
+            ..default()
+        });
+    })
+    .add_systems(Update, |w: &mut World| {
+        w.run_schedule(DeterministicSchedule);
+    });
+
+    app.update();
 }

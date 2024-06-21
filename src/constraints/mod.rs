@@ -14,7 +14,7 @@
 //!
 //! Below are the currently implemented constraints.
 //!
-//! - [`PenetrationConstraint`](PenetrationConstraint)
+//! - [`PenetrationConstraint`]
 //! - [Joints](joints)
 //!     - [`FixedJoint`]
 //!     - [`DistanceJoint`]
@@ -23,7 +23,7 @@
 //!     - [`PrismaticJoint`]
 //!
 //! More constraint types will be added in future releases. If you need more constraints now, consider
-//! [creating your own constraints](custom-constraints).
+//! [creating your own constraints](#custom-constraints).
 //!
 //! ## Custom constraints
 //!
@@ -33,11 +33,9 @@
 //! It should look similar to this:
 //!
 //! ```
-//! use bevy::prelude::*;
-//! # #[cfg(feature = "2d")]
-//! # use bevy_xpbd_2d::prelude::*;
-//! # #[cfg(feature = "3d")]
-//! use bevy_xpbd_3d::prelude::*;
+//! use bevy::{ecs::entity::{EntityMapper, MapEntities}, prelude::*};
+#![cfg_attr(feature = "2d", doc = "use bevy_xpbd_2d::prelude::*;")]
+#![cfg_attr(feature = "3d", doc = "use bevy_xpbd_3d::prelude::*;")]
 //!
 //! struct CustomConstraint {
 //!     entity1: Entity,
@@ -55,6 +53,13 @@
 //!     }
 //!     fn solve(&mut self, bodies: [&mut RigidBodyQueryItem; 2], dt: f32) {
 //!         // Constraint solving logic goes here
+//!     }
+//! }
+//!
+//! impl MapEntities for CustomConstraint {
+//!     fn map_entities<M: EntityMapper>(&mut self, entity_mapper: &mut M) {
+//!        self.entity1 = entity_mapper.map_entity(self.entity1);
+//!        self.entity2 = entity_mapper.map_entity(self.entity2);
 //!     }
 //! }
 //! ```
@@ -135,7 +140,7 @@
 //! ```
 //!
 //! where `w_i` is the inverse mass of particle `i`, `|▽C_i|` is the length of the gradient vector for particle `i`,
-//! `α` is the constraint's compliance (inverse of stiffness) and `h` is the [substep size](SubDeltaTime). Using `α = 0`
+//! `α` is the constraint's compliance (inverse of stiffness) and `h` is the substep size. Using `α = 0`
 //! corresponds to infinite stiffness.
 //!
 //! The minus sign is there because the gradients point in the direction in which `C` increases the most,
@@ -159,7 +164,7 @@
 //!
 //! Unlike particles, [rigid bodies](RigidBody) also have angular quantities like [rotation](Rotation),
 //! [angular velocity](AngularVelocity) and [angular inertia](Inertia). In addition, constraints can be applied at specific
-//! points in the body, like [contact positions](Contact) or joint attachment positions, which also affects the orientation.
+//! points in the body, like contact positions or joint attachment positions, which also affects the orientation.
 //!
 //! When the constraint is not applied at the center of mass, the inverse mass in the computation of `Δλ` must
 //! be replaced with a *generalized inverse mass* that is essentially the effective mass when applying the constraint
@@ -207,9 +212,10 @@ pub use penetration::*;
 pub use position_constraint::PositionConstraint;
 
 use crate::prelude::*;
+use bevy::ecs::entity::MapEntities;
 
 /// A trait for all XPBD [constraints].
-pub trait XpbdConstraint<const ENTITY_COUNT: usize> {
+pub trait XpbdConstraint<const ENTITY_COUNT: usize>: MapEntities {
     /// The entities participating in the constraint.
     fn entities(&self) -> [Entity; ENTITY_COUNT];
 

@@ -1,13 +1,17 @@
 //! [`FixedJoint`] component.
 
 use crate::prelude::*;
-use bevy::prelude::*;
+use bevy::{
+    ecs::entity::{EntityMapper, MapEntities},
+    prelude::*,
+};
 
 /// A fixed joint prevents any relative movement of the attached bodies.
 ///
 /// You should generally prefer using a single body instead of multiple bodies fixed together,
 /// but fixed joints can be useful for things like rigid structures where a force can dynamically break the joints connecting individual bodies.
 #[derive(Component, Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serialize", derive(serde::Serialize, serde::Deserialize))]
 pub struct FixedJoint {
     /// First entity constrained by the joint.
     pub entity1: Entity,
@@ -152,3 +156,10 @@ impl FixedJoint {
 impl PositionConstraint for FixedJoint {}
 
 impl AngularConstraint for FixedJoint {}
+
+impl MapEntities for FixedJoint {
+    fn map_entities<M: EntityMapper>(&mut self, entity_mapper: &mut M) {
+        self.entity1 = entity_mapper.map_entity(self.entity1);
+        self.entity2 = entity_mapper.map_entity(self.entity2);
+    }
+}

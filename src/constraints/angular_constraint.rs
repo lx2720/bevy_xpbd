@@ -30,10 +30,10 @@ pub trait AngularConstraint: XpbdConstraint<2> {
         let inv_inertia2 = body2.effective_world_inv_inertia();
 
         // Apply rotational updates
-        if body1.rb.is_dynamic() {
+        if body1.rb.is_dynamic() && body1.dominance() <= body2.dominance() {
             *body1.rotation += Self::get_delta_rot(rot1, inv_inertia1, p);
         }
-        if body2.rb.is_dynamic() {
+        if body2.rb.is_dynamic() && body2.dominance() <= body1.dominance() {
             *body2.rotation -= Self::get_delta_rot(rot2, inv_inertia2, p);
         }
 
@@ -67,9 +67,18 @@ pub trait AngularConstraint: XpbdConstraint<2> {
         // Apply rotational updates
         if body1.rb.is_dynamic() {
             *body1.rotation += Self::get_delta_rot(rot1, inv_inertia1, p);
+
+            // In 3D, subtracting quaternions like above can result in unnormalized rotations,
+            // which causes stability issues (see #235) and panics when trying to rotate unit vectors.
+            // TODO: It would be nice to avoid normalization if possible.
+            //       Maybe the math above can be done in a way that keeps rotations normalized?
+            body1.rotation.0 = body1.rotation.0.normalize();
         }
         if body2.rb.is_dynamic() {
             *body2.rotation -= Self::get_delta_rot(rot2, inv_inertia2, p);
+
+            // See comments for `body1` above.
+            body2.rotation.0 = body2.rotation.0.normalize();
         }
 
         p

@@ -20,11 +20,10 @@
 //! - [`PhysicsSchedule`] and [`PhysicsStepSet`]
 //! - [`SubstepSchedule`] and [`SubstepSet`]
 
-pub mod broad_phase;
+pub mod collision;
 #[cfg(feature = "debug-plugin")]
 pub mod debug;
 pub mod integrator;
-pub mod narrow_phase;
 pub mod prepare;
 pub mod setup;
 pub mod sleeping;
@@ -32,16 +31,19 @@ pub mod solver;
 pub mod spatial_query;
 pub mod sync;
 
-pub use broad_phase::BroadPhasePlugin;
+use bevy::utils::intern::Interned;
+pub use collision::{
+    broad_phase::BroadPhasePlugin, collider_backend::*, contact_reporting::ContactReportingPlugin,
+    narrow_phase::NarrowPhasePlugin,
+};
 #[cfg(feature = "debug-plugin")]
-pub use debug::*;
+pub use debug::PhysicsDebugPlugin;
 pub use integrator::IntegratorPlugin;
-pub use narrow_phase::*;
 pub use prepare::PreparePlugin;
-pub use setup::*;
+pub use setup::PhysicsSetupPlugin;
 pub use sleeping::SleepingPlugin;
-pub use solver::{solve_constraint, SolverPlugin};
-pub use spatial_query::*;
+pub use solver::SolverPlugin;
+pub use spatial_query::SpatialQueryPlugin;
 pub use sync::SyncPlugin;
 
 #[allow(unused_imports)]
@@ -55,14 +57,17 @@ use bevy::prelude::*;
 /// - [`PhysicsSetupPlugin`]: Sets up the physics engine by initializing the necessary schedules, sets and resources.
 /// - [`PreparePlugin`]: Runs systems at the start of each physics frame; initializes [rigid bodies](RigidBody)
 /// and [colliders](Collider) and updates components.
+/// - [`ColliderBackendPlugin`]: Handles generic collider backend logic, like initializing colliders and AABBs
+/// and updating related components.
 /// - [`BroadPhasePlugin`]: Collects pairs of potentially colliding entities into [`BroadCollisionPairs`] using
 /// [AABB](ColliderAabb) intersection checks.
-/// - [`IntegratorPlugin`]: Integrates Newton's 2nd law of motion, applying forces and moving entities according to their velocities.
 /// - [`NarrowPhasePlugin`]: Computes contacts between entities and sends collision events.
+/// - [`ContactReportingPlugin`]: Sends collision events and updates [`CollidingEntities`].
+/// - [`IntegratorPlugin`]: Integrates Newton's 2nd law of motion, applying forces and moving entities according to their velocities.
 /// - [`SolverPlugin`]: Solves positional and angular [constraints], updates velocities and solves velocity constraints
 /// (dynamic [friction](Friction) and [restitution](Restitution)).
 /// - [`SleepingPlugin`]: Controls when bodies should be deactivated and marked as [`Sleeping`] to improve performance.
-/// - [`SpatialQueryPlugin`]: Handles spatial queries like [ray casting](RayCaster) and shape casting.
+/// - [`SpatialQueryPlugin`]: Handles spatial queries like [raycasting](RayCaster) and shapecasting.
 /// - [`SyncPlugin`]: Keeps [`Position`] and [`Rotation`] in sync with `Transform`.
 /// - `PhysicsDebugPlugin`: Renders physics objects and events like [AABBs](ColliderAabb) and [contacts](Collision)
 /// for debugging purposes (only with `debug-plugin` feature enabled).
@@ -77,10 +82,8 @@ use bevy::prelude::*;
 ///
 /// ```no_run
 /// use bevy::prelude::*;
-/// # #[cfg(feature = "2d")]
-/// # use bevy_xpbd_2d::prelude::*;
-/// # #[cfg(feature = "3d")]
-/// use bevy_xpbd_3d::prelude::*;
+#[cfg_attr(feature = "2d", doc = "use bevy_xpbd_2d::prelude::*;")]
+#[cfg_attr(feature = "3d", doc = "use bevy_xpbd_3d::prelude::*;")]
 ///
 /// fn main() {
 ///     App::new()
@@ -89,7 +92,7 @@ use bevy::prelude::*;
 /// }
 /// ```
 ///
-/// Note that using `FixedUpdate` with [`PhysicsTimestep::Fixed`] can produce unexpected results due to two separate
+/// Note that using `FixedUpdate` with a fixed [physics timestep](Physics) can produce unexpected results due to two separate
 /// fixed timesteps. However, using `FixedUpdate` can be useful for [networking usage](crate#can-the-engine-be-used-on-servers)
 /// when you need to keep the client and server in sync.
 ///
@@ -103,10 +106,14 @@ use bevy::prelude::*;
 ///
 /// ```
 /// use bevy::prelude::*;
-/// # #[cfg(feature = "2d")]
-/// # use bevy_xpbd_2d::{prelude::*, PhysicsSchedule, PhysicsStepSet};
-/// # #[cfg(feature = "3d")]
-/// use bevy_xpbd_3d::{prelude::*, PhysicsSchedule, PhysicsStepSet};
+#[cfg_attr(
+    feature = "2d",
+    doc = "use bevy_xpbd_2d::{prelude::*, PhysicsSchedule, PhysicsStepSet};"
+)]
+#[cfg_attr(
+    feature = "3d",
+    doc = "use bevy_xpbd_3d::{prelude::*, PhysicsSchedule, PhysicsStepSet};"
+)]
 ///
 /// pub struct CustomBroadPhasePlugin;
 ///
@@ -131,10 +138,8 @@ use bevy::prelude::*;
 ///
 /// ```no_run
 /// use bevy::prelude::*;
-/// # #[cfg(feature = "2d")]
-/// # use bevy_xpbd_2d::prelude::*;
-/// # #[cfg(feature = "3d")]
-/// use bevy_xpbd_3d::prelude::*;
+#[cfg_attr(feature = "2d", doc = "use bevy_xpbd_2d::prelude::*;")]
+#[cfg_attr(feature = "3d", doc = "use bevy_xpbd_3d::prelude::*;")]
 ///
 /// # struct CustomBroadPhasePlugin;
 /// # impl Plugin for CustomBroadPhasePlugin {
@@ -161,7 +166,7 @@ use bevy::prelude::*;
 /// You can find a full working example
 /// [here](https://github.com/Jondolf/bevy_xpbd/blob/main/crates/bevy_xpbd_3d/examples/custom_broad_phase.rs).
 pub struct PhysicsPlugins {
-    schedule: Box<dyn ScheduleLabel>,
+    schedule: Interned<dyn ScheduleLabel>,
 }
 
 impl PhysicsPlugins {
@@ -170,7 +175,7 @@ impl PhysicsPlugins {
     /// The default schedule is `PostUpdate`.
     pub fn new(schedule: impl ScheduleLabel) -> Self {
         Self {
-            schedule: Box::new(schedule),
+            schedule: schedule.intern(),
         }
     }
 }
@@ -183,23 +188,25 @@ impl Default for PhysicsPlugins {
 
 impl PluginGroup for PhysicsPlugins {
     fn build(self) -> PluginGroupBuilder {
-        #[allow(unused_mut)]
-        let mut builder = PluginGroupBuilder::start::<Self>();
+        let builder = PluginGroupBuilder::start::<Self>()
+            .add(PhysicsSetupPlugin::new(self.schedule))
+            .add(PreparePlugin::new(self.schedule));
 
-        #[cfg(feature = "debug-plugin")]
-        {
-            builder = builder.add(PhysicsDebugPlugin::default());
-        }
+        #[cfg(all(
+            feature = "default-collider",
+            any(feature = "parry-f32", feature = "parry-f64")
+        ))]
+        let builder = builder
+            .add(ColliderBackendPlugin::<Collider>::new(self.schedule))
+            .add(NarrowPhasePlugin::<Collider>::default());
 
         builder
-            .add(PhysicsSetupPlugin::new(self.schedule.dyn_clone()))
-            .add(PreparePlugin::new(self.schedule.dyn_clone()))
             .add(BroadPhasePlugin)
+            .add(ContactReportingPlugin)
             .add(IntegratorPlugin)
-            .add(NarrowPhasePlugin)
             .add(SolverPlugin)
             .add(SleepingPlugin)
-            .add(SpatialQueryPlugin::new(self.schedule.dyn_clone()))
+            .add(SpatialQueryPlugin::new(self.schedule))
             .add(SyncPlugin::new(self.schedule))
     }
 }

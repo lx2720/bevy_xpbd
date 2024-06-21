@@ -1,9 +1,6 @@
 use bevy::prelude::*;
 use bevy_xpbd_3d::{math::*, prelude::*, PhysicsSchedule, PhysicsStepSet};
 
-// Required for AABB intersection check. This might be abstracted away at some point.
-use bevy_xpbd_3d::parry::bounding_volume::BoundingVolume;
-
 fn main() {
     let mut app = App::new();
 
@@ -29,8 +26,8 @@ fn setup(
     // Plane
     commands.spawn((
         PbrBundle {
-            mesh: meshes.add(Mesh::from(shape::Plane::from_size(8.0))),
-            material: materials.add(Color::rgb(0.3, 0.5, 0.3).into()),
+            mesh: meshes.add(Plane3d::default().mesh().size(8.0, 8.0)),
+            material: materials.add(Color::rgb(0.3, 0.5, 0.3)),
             ..default()
         },
         RigidBody::Static,
@@ -39,19 +36,19 @@ fn setup(
     // Cube
     commands.spawn((
         PbrBundle {
-            mesh: meshes.add(Mesh::from(shape::Cube { size: 1.0 })),
-            material: materials.add(Color::rgb(0.8, 0.7, 0.6).into()),
+            mesh: meshes.add(Cuboid::default()),
+            material: materials.add(Color::rgb(0.8, 0.7, 0.6)),
+            transform: Transform::from_xyz(0.0, 4.0, 0.0),
             ..default()
         },
         RigidBody::Dynamic,
-        Position(Vector::Y * 4.0),
         AngularVelocity(Vector::new(2.5, 3.4, 1.6)),
         Collider::cuboid(1.0, 1.0, 1.0),
     ));
     // Light
     commands.spawn(PointLightBundle {
         point_light: PointLight {
-            intensity: 1500.0,
+            intensity: 2_000_000.0,
             shadows_enabled: true,
             ..default()
         },
@@ -91,7 +88,7 @@ fn collect_collision_pairs(
     // Loop through all entity combinations and collect pairs of bodies with intersecting AABBs
     for [(ent_a, aabb_a, rb_a), (ent_b, aabb_b, rb_b)] in bodies.iter_combinations() {
         // At least one of the bodies is dynamic and their AABBs intersect
-        if (rb_a.is_dynamic() || rb_b.is_dynamic()) && aabb_a.intersects(&aabb_b.0) {
+        if (rb_a.is_dynamic() || rb_b.is_dynamic()) && aabb_a.intersects(aabb_b) {
             broad_collision_pairs.0.push((ent_a, ent_b));
         }
     }

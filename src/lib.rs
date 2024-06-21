@@ -1,48 +1,16 @@
 //! # Bevy XPBD
 //!
-//! **Bevy XPBD** is a 2D and 3D physics engine based on [*Extended Position Based Dynamics* (XPBD)](#what-is-xpbd)
-//! for the [Bevy game engine](https://bevyengine.org/).
+//! **Bevy XPBD** is a 2D and 3D physics engine based on
+//! [*Extended Position Based Dynamics* (XPBD)](#what-is-xpbd) for
+//! the [Bevy game engine](https://bevyengine.org/).
 //!
-//! ## Design
+//! Check out the [GitHub repository](https://github.com/Jondolf/bevy_xpbd)
+//! for more information about the design, read the [Getting started](#getting-started)
+//! guide below to get up to speed, and take a look at the [Table of contents](#table-of-contents)
+//! for an overview of the engine's features and their documentation.
 //!
-//! Below are some of the core design principles used in Bevy XPBD.
-//!
-//! - Made with Bevy, for Bevy. No wrappers around existing engines.
-//! - Provide an ergonomic and familiar API. Ergonomics is key for a good experience.
-//! - Utilize the ECS as much as possible. The engine should feel like a part of Bevy, and it shouldn't
-//! need to maintain a separate physics world.
-//! - Use a highly modular [plugin architecture](plugins). Users should be able to
-//! replace parts of the engine with their own implementations.
-//! - Have good documentation. A physics engine is pointless if you don't know how to use it.
-//!
-//! ## Features
-//!
-//! Below are some of the features of Bevy XPBD.
-//!
-//! - Dynamic, kinematic and static [rigid bodies](RigidBody)
-//! - [Colliders](Collider) powered by [parry](parry)
-//!     - Collision events: [`Collision`], [`CollisionStarted`], [`CollisionEnded`]
-//!     - Access to [colliding entities](CollidingEntities)
-//!     - [Sensor colliders](Sensor)
-//!     - [Collision layers](CollisionLayers)
-//! - Material properties like [restitution](Restitution) and [friction](Friction)
-//! - [Linear damping](LinearDamping) and [angular damping](AngularDamping) for simulating drag
-//! - [Gravity] and [gravity scale](GravityScale)
-//! - External [forces](ExternalForce), [torque](ExternalTorque), [impulses](ExternalImpulse) and
-//! [angular impulses](ExternalAngularImpulse)
-//! - [Locking](LockedAxes) translational and rotational axes
-//! - [Joints](joints)
-//! - Built-in [constraints] and support for [custom constraints](constraints#custom-constraints)
-//! - [Spatial queries](spatial_query)
-//!     - [Ray casting](spatial_query#ray-casting)
-//!     - [Shape casting](spatial_query#shape-casting)
-//!     - [Point projection](spatial_query#point-projection)
-//!     - [Intersection tests](spatial_query#intersection-tests)
-//! - Debug rendering [colliders](Collider), [AABBs](ColliderAabb), [contacts](Contact), [joints] and axes
-//! (with `debug-plugin` feature)
-//! - Automatically deactivating bodies with [sleeping](Sleeping)
-//! - Configurable [timesteps](PhysicsTimestep), [time scale](PhysicsTimescale) and [substepping](SubstepCount)
-//! - `f32`/`f64` precision (`f32` by default)
+//! You can also check out the [FAQ](#frequently-asked-questions), and if you encounter
+//! any further problems, consider saying hello on the [Bevy Discord](https://discord.gg/bevy)!
 //!
 //! ## Getting started
 //!
@@ -50,62 +18,69 @@
 //!
 //! ### Add the dependency
 //!
-//! First, add `bevy_xpbd_2d` or `bevy_xpbd_3d` to your dependencies in `Cargo.toml`:
+//! First, add `bevy_xpbd_2d` or `bevy_xpbd_3d` to the dependencies in your `Cargo.toml`:
 //!  
 //! ```toml
 //! # For 2D applications:
 //! [dependencies]
-//! bevy_xpbd_2d = "0.2"
+//! bevy_xpbd_2d = "0.4"
 //!
 //! # For 3D applications:
 //! [dependencies]
-//! bevy_xpbd_3d = "0.2"
+//! bevy_xpbd_3d = "0.4"
 //!
 //! # If you want to use the most up-to-date version, you can follow the main branch:
 //! [dependencies]
 //! bevy_xpbd_3d = { git = "https://github.com/Jondolf/bevy_xpbd", branch = "main" }
 //! ```
 //!
-//! By default, Bevy XPBD uses `f32` numbers. If you encounter instability or use a large number
-//! of [substeps](SubstepCount), you might want to use `f64` instead. You can change these kinds
-//! of features by disabling the default features and manually specifying the feature flags you want:
+//! You can specify features by disabling the default features and manually adding
+//! the feature flags you want:
 //!
 //! ```toml
 //! [dependencies]
-//! # Add 3D Bevy XPBD with double-precision floating point numbers
-//! bevy_xpbd_3d = { version = "0.2", default-features = false, features = ["3d", "f64"] }
+//! # Add 3D Bevy XPBD with double-precision floating point numbers.
+//! # `parry-f64` enables collision detection using Parry.
+//! bevy_xpbd_3d = { version = "0.4", default-features = false, features = ["3d", "f64", "parry-f64"] }
 //! ```
 //!
 //! ### Feature flags
 //!
-//! Default features: `2d`/`3d`, `f32` and `collider-from-mesh`
+//! | Feature                | Description                                                                                                                                  | Default feature         |
+//! | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- |
+//! | `2d`                   | Enables 2D physics. Incompatible with `3d`.                                                                                                  | Yes (`bevy_xpbd_2d`)    |
+//! | `3d`                   | Enables 3D physics. Incompatible with `2d`.                                                                                                  | Yes (`bevy_xpbd_3d`)    |
+//! | `f32`                  | Enables `f32` precision for physics. Incompatible with `f64`.                                                                                | Yes                     |
+//! | `f64`                  | Enables `f64` precision for physics. Incompatible with `f32`.                                                                                | No                      |
+//! | `default-collider`     | Enables the default [`Collider`]. Required for [spatial queries](spatial_query). Requires either the `parry-f32` or `parry-f64` feature.     | Yes                     |
+//! | `parry-f32`            | Enables the `f32` version of the Parry collision detection library. Also enables the `default-collider` feature.                             | Yes                     |
+//! | `parry-f64`            | Enables the `f64` version of the Parry collision detection library. Also enables the `default-collider` feature.                             | No                      |
+#![cfg_attr(
+    feature = "3d",
+    doc = "| `collider-from-mesh`   | Allows you to create [`Collider`]s from `Mesh`es.                                                                                | Yes                     |"
+)]
+#![cfg_attr(
+    feature = "3d",
+    doc = "| `async-collider`       | Allows you to generate [`Collider`]s from mesh handles and scenes.                                                               | Yes                     |"
+)]
+//! | `debug-plugin`         | Enables physics debug rendering using the [`PhysicsDebugPlugin`]. The plugin must be added separately.                           | Yes                     |
+//! | `enhanced-determinism` | Enables increased determinism.                                                                                                   | No                      |
+//! | `parallel`             | Enables some extra multithreading, which improves performance for larger simulations but can add some overhead for smaller ones. | Yes                     |
+//! | `simd`                 | Enables [SIMD] optimizations.                                                                                                    | No                      |
+//! | `serialize`            | Enables support for serialization and deserialization using Serde.                                                               | No                      |
 //!
-//! - `2d` enables simulation on the `x` and `y` axes. Enabled by default for `bevy_xpbd_2d`. Incompatible with `3d`.
-//! - `3d` enables simulation on the `x`, `y` and `z` axes. Enabled by default for `bevy_xpbd_3d`. Incompatible with `2d`.
-//! - `f32` enables using `f32` numbers. Incompatible with `f64`.
-//! - `f64` enables using `f64` numbers. Recommended when encountering stability problems, especially with
-//! small timesteps. Incompatible with `f32`.
-//! - `debug-plugin` enables the `PhysicsDebugPlugin` used for rendering physics objects and properties, like
-//! [colliders](Collider), [AABBs](ColliderAabb) and [contacts](Contact).
-//! - `collider-from-mesh` allows you to create [colliders](Collider) from Bevy meshes. Enables `bevy_render`.
-//! - `simd` enables [SIMD](https://en.wikipedia.org/wiki/Single_instruction,_multiple_data) optimizations.
-//! - `parallel` enables multithreading. This improves performance for larger simulations but can add unnecessary
-//! overhead for smaller ones.
-//! - `enhanced-determinism` enables increased determinism. (Note: cross-platform determinism doesn't work yet, even
-//! with this feature enabled)
+//! [SIMD]: https://en.wikipedia.org/wiki/Single_instruction,_multiple_data
 //!
 //! ### Install the plugin
 //!
-//! Bevy XPBD is designed to be very modular. It is built from many different [plugins] that
+//! Bevy XPBD is designed to be very modular. It is built from several [plugins] that
 //! manage different parts of the engine. These plugins can be easily initialized and configured through
 //! the [`PhysicsPlugins`] plugin group.
 //!
 //! ```no_run
 //! use bevy::prelude::*;
-//! # #[cfg(feature = "2d")]
-//! # use bevy_xpbd_2d::prelude::*;
-//! # #[cfg(feature = "3d")]
-//! use bevy_xpbd_3d::prelude::*;
+#![cfg_attr(feature = "2d", doc = "use bevy_xpbd_2d::prelude::*;")]
+#![cfg_attr(feature = "3d", doc = "use bevy_xpbd_3d::prelude::*;")]
 //!
 //! fn main() {
 //!     App::new()
@@ -121,80 +96,131 @@
 //! with the [`RigidBody`] and [`Collider`] components:
 //!
 //! ```
-//! # use bevy::prelude::*;
-//! # #[cfg(feature = "2d")]
-//! # use bevy_xpbd_2d::prelude::*;
-//! # #[cfg(feature = "3d")]
-//! # use bevy_xpbd_3d::prelude::*;
-//! #
+//! use bevy::prelude::*;
+#![cfg_attr(feature = "2d", doc = "use bevy_xpbd_2d::prelude::*;")]
+#![cfg_attr(feature = "3d", doc = "use bevy_xpbd_3d::prelude::*;")]
+//!
 //! fn setup(mut commands: Commands) {
-//!     commands.spawn((RigidBody::Dynamic, Collider::ball(0.5)));
+#![cfg_attr(
+    feature = "2d",
+    doc = "    commands.spawn((RigidBody::Dynamic, Collider::circle(0.5)));"
+)]
+#![cfg_attr(
+    feature = "3d",
+    doc = "    commands.spawn((RigidBody::Dynamic, Collider::sphere(0.5)));"
+)]
 //! }
 //! ```
 //!
-//! To learn more about using Bevy XPBD, consider taking a look at the official [examples](#examples) and
-//! how to accomplish some [common tasks](#common-tasks).
+//! You can find lots of [usage examples](https://github.com/Jondolf/bevy_xpbd#more-examples)
+//! in the project's [repository](https://github.com/Jondolf/bevy_xpbd).
 //!
-//! To learn more about the structure of the engine, consider taking a look at the [plugins] and
-//! [what XPBD actually is](#what-is-xpbd).
+//! ## Table of contents
 //!
-//! ### Examples
+//! Below is a structured overview of the documentation for the various
+//! features of the engine.
 //!
-//! You can find 2D examples in [`crates/bevy_xpbd_2d/examples`](https://github.com/Jondolf/bevy_xpbd/tree/main/crates/bevy_xpbd_2d/examples)
-//! and 3D examples in [`crates/bevy_xpbd_3d/examples`](https://github.com/Jondolf/bevy_xpbd/tree/main/crates/bevy_xpbd_3d/examples).
+//! ### Rigid bodies
 //!
-//! You can run the examples with default features as you normally would.
-//! For example, running the `cubes` example looks like this:
-//!
-//! ```bash
-//! cargo run --example cubes
-//! ```
-//!
-//! Note that the examples support both `f32` and `f64` precisions, so the code contains some feature-dependent types like `Scalar` and `Vector`.
-//! In actual usage these are not needed, so you can just use `f32` or `f64` types depending on the features you have chosen.
-//!
-//! By default the examples use `f32`, so if you want to run the `f64` versions, you need to disable the default features and manually choose
-//! the dimension and precision:
-//!
-//! ```bash
-//! cargo run --example cubes --no-default-features --features "3d f64"
-//! ```
-//!
-//! ### Common tasks
-//!
-//! - [Create a rigid body](RigidBody)
-//! - [Define mass properties](RigidBody#adding-mass-properties)
-//! - [Add a collider](Collider)
-//! - [Listen to collision events](Collider#collision-events)
-//! - [Define collision layers](CollisionLayers#creation)
-//! - [Configure restitution (bounciness)](Restitution)
-//! - [Configure friction](Friction)
-//! - [Configure gravity](Gravity)
-//! - [Apply external forces](ExternalForce)
-//! - [Apply external torque](ExternalTorque)
+//! - [Rigid body types](RigidBody#rigid-body-types)
+//! - [Creating rigid bodies](RigidBody#creation)
+//! - [Movement](RigidBody#movement)
+//!     - [Linear](LinearVelocity) and [angular](AngularVelocity) velocity
+//!     - [Forces](ExternalForce), [torque](ExternalTorque), and [linear](ExternalImpulse) and [angular](ExternalAngularImpulse) impulses
+//! - [Gravity] and [gravity scale](GravityScale)
+//! - [Mass properties](RigidBody#mass-properties)
+//! - [Linear](LinearDamping) and [angular](AngularDamping) velocity damping
 //! - [Lock translational and rotational axes](LockedAxes)
-//! - [Use joints](joints#using-joints)
-//! - [Perform spatial queries](spatial_query)
-//!     - [Ray casting](spatial_query#ray-casting)
-//!     - [Shape casting](spatial_query#shape-casting)
+//! - [Dominance]
+//! - [Automatic deactivation with sleeping](Sleeping)
+//!
+//! ### Collision detection
+//!
+//! - [Colliders](Collider)
+//!     - [Creation](Collider#creation)
+//!     - [Density](ColliderDensity)
+//!     - [Friction] and [restitution](Restitution) (bounciness)
+//!     - [Collision layers](CollisionLayers)
+//!     - [Sensors](Sensor)
+#![cfg_attr(
+    feature = "3d",
+    doc = "    - Creating colliders from meshes with [`AsyncCollider`] and [`AsyncSceneCollider`]"
+)]
+//! - [Get colliding entities](CollidingEntities)
+//! - [Collision events](ContactReportingPlugin#collision-events)
+//! - [Accessing, filtering and modifying collisions](Collisions)
+//! - [Manual contact queries](contact_query)
+//!
+//! ### Constraints and joints
+//!
+//! - [Constraints](constraints) (advanced)
+//! - [Joints](joints)
+//!     - [Fixed joint](FixedJoint)
+//!     - [Distance joint](DistanceJoint)
+//!     - [Prismatic joint](PrismaticJoint)
+//!     - [Revolute joint](RevoluteJoint)
+//!     - [Spherical joint](SphericalJoint)
+//!
+//! Joint motors and articulations are not supported yet, but they will be implemented in a future release.
+//!
+//! ### Spatial queries
+//!
+//! - [Spatial query types](spatial_query)
+//!     - [Raycasting](spatial_query#raycasting) and [`RayCaster`]
+//!     - [Shapecasting](spatial_query#shapecasting) and [`ShapeCaster`]
 //!     - [Point projection](spatial_query#point-projection)
 //!     - [Intersection tests](spatial_query#intersection-tests)
-//! - [Configure the physics timestep](PhysicsTimestep)
-//! - [Configure the time scale](PhysicsTimescale)
-//! - [Configure the substep count](SubstepCount)
-//! - [Configure the schedule for running physics](PhysicsPlugins#custom-schedule)
+//! - [Spatial query filters](SpatialQueryFilter)
+//! - [The `SpatialQuery` system parameter](SpatialQuery)
+//!
+//! ### Configuration
+//!
+//! - [Gravity]
+//! - [Physics timestep](Physics#usage)
+//! - [Physics speed](Physics#physics-speed)
+//! - [Configure simulation fidelity with substeps](SubstepCount)
+//! - [Render physics objects for debugging](PhysicsDebugPlugin)
+//!
+//! ### Scheduling
+//!
+//! - [Schedules and sets](PhysicsSetupPlugin#schedules-and-sets)
+//!     - [`PhysicsSet`]
+//!     - [`PhysicsSchedule`] and [`PhysicsStepSet`]
+//!     - [`SubstepSchedule`] and [`SubstepSet`]
+//!     - [`PostProcessCollisions`] schedule
+//!     - [`PrepareSet`]
+//! - [Configure the schedule used for running physics](PhysicsPlugins#custom-schedule)
+//! - [Pausing, resuming and stepping physics](Physics#pausing-resuming-and-stepping-physics)
 //! - [Usage on servers](#can-the-engine-be-used-on-servers)
-//! - [Create custom constraints](constraints#custom-constraints)
-//! - [Replace built-in plugins with custom plugins](PhysicsPlugins#custom-plugins)
+//!
+//! ### Architecture
+//!
+//! - [List of plugins and their responsibilities](PhysicsPlugins)
+//! - [What is Extended Position Based Dynamics?](#what-is-xpbd)
+//! - Extending and modifying the engine
+//!     - [Custom plugins](PhysicsPlugins#custom-plugins)
+//!     - [Custom constraints](constraints#custom-constraints)
+//!     - [Custom joints](joints#custom-joints)
 //!
 //! ## Frequently asked questions
+//!
+//! - [How does Bevy XPBD compare to Rapier and bevy_rapier?](#how-does-bevy-xpbd-compare-to-rapier-and-bevy_rapier)
+//! - [Why is nothing happening?](#why-is-nothing-happening)
+//! - [Why is everything moving so slowly?](#why-is-everything-moving-so-slowly)
+//! - [Why did my rigid body suddenly vanish?](#why-did-my-rigid-body-suddenly-vanish)
+//! - [Why is performance so bad?](#why-is-performance-so-bad)
+//! - [Why does my camera following jitter?](#why-does-my-camera-following-jitter)
+//! - [Is there a character controller?](#is-there-a-character-controller)
+//! - [Why are there separate `Position` and `Rotation` components?](#why-are-there-separate-position-and-rotation-components)
+//! - [Can the engine be used on servers?](#can-the-engine-be-used-on-servers)
+//! - [Something else?](#something-else)
 //!
 //! ### How does Bevy XPBD compare to Rapier and bevy_rapier?
 //!
 //! Rapier is the biggest and most used physics engine in the Rust ecosystem, and it is currently
 //! the most mature and feature-rich option.
 //!
-//! bevy_rapier is a great physics integration for Bevy, but it does have several problems:
+//! `bevy_rapier` is a great physics integration for Bevy, but it does have several problems:
 //!
 //! - It has to maintain a separate physics world and synchronize a ton of data with Bevy each frame
 //! - The source code is difficult to inspect, as the vast majority of it is glue code and wrappers
@@ -222,7 +248,7 @@
 //! rapidly, and it is already pretty close to feature-parity with Rapier.
 //!
 //! At the end of the day, both engines are very solid options. If you are looking for a more mature and tested
-//! physics integration, bevy_rapier is the better choice, but if you prefer an engine with less overhead
+//! physics integration, `bevy_rapier` is the better choice, but if you prefer an engine with less overhead
 //! and a more native Bevy integration, consider using Bevy XPBD. Their core APIs are also quite similar,
 //! so switching between them should be straightforward.
 //!
@@ -263,21 +289,105 @@
 //! Note that Bevy XPBD simply isn't very optimized yet, and it mostly runs on a single thread for now.
 //! This will be addressed in future releases.
 //!
+//! ### Why does my camera following jitter?
+//!
+//! When you write a system that makes the camera follow a physics entity, you might notice some jitter.
+//!
+//! To fix this, the system needs to:
+//!
+//! - Run after physics so that it has the up-to-date position of the player.
+//! - Run before transform propagation so that your changes to the camera's `Transform` are written
+//! to the camera's `GlobalTransform` before the end of the frame.
+//!
+//! The following ordering constraints should resolve the issue.
+//!
+//! ```
+//! # use bevy::prelude::*;
+//! # use bevy::transform::TransformSystem;
+#![cfg_attr(feature = "2d", doc = "# use bevy_xpbd_2d::prelude::*;")]
+#![cfg_attr(feature = "3d", doc = "# use bevy_xpbd_3d::prelude::*;")]
+//! #
+//! # fn main() {
+//! #     let mut app = App::new();
+//! #
+//! app.add_systems(
+//!     PostUpdate,
+//!     camera_follow_player
+//!         .after(PhysicsSet::Sync)
+//!         .before(TransformSystem::TransformPropagate),
+//! );
+//! # }
+//! #
+//! # fn camera_follow_player() {}
+//! ```
+//!
+//! ### Is there a character controller?
+//!
+//! Bevy XPBD does not have a built-in character controller, so if you need one,
+//! you will need to implement it yourself. However, third party character controllers
+//! like [`bevy_tnua`](https://github.com/idanarye/bevy-tnua) support Bevy XPBD, and [`bevy_mod_wanderlust`](https://github.com/PROMETHIA-27/bevy_mod_wanderlust)
+//! and others are also likely to get Bevy XPBD support soon.
+//!
+//! For custom character controllers, you can take a look at the
+#![cfg_attr(
+    feature = "2d",
+    doc = "[`dynamic_character_2d`] and [`kinematic_character_2d`] examples to get started."
+)]
+#![cfg_attr(
+    feature = "3d",
+    doc = "[`dynamic_character_3d`] and [`kinematic_character_3d`] examples to get started."
+)]
+//!
+#![cfg_attr(
+    feature = "2d",
+    doc = "[`dynamic_character_2d`]: https://github.com/Jondolf/bevy_xpbd/tree/main/crates/bevy_xpbd_2d/examples/dynamic_character_2d
+[`kinematic_character_2d`]: https://github.com/Jondolf/bevy_xpbd/tree/main/crates/bevy_xpbd_2d/examples/kinematic_character_2d"
+)]
+#![cfg_attr(
+    feature = "3d",
+    doc = "[`dynamic_character_3d`]: https://github.com/Jondolf/bevy_xpbd/tree/main/crates/bevy_xpbd_3d/examples/dynamic_character_3d
+[`kinematic_character_3d`]: https://github.com/Jondolf/bevy_xpbd/tree/main/crates/bevy_xpbd_3d/examples/kinematic_character_3d"
+)]
+//!
+//! ### Why are there separate `Position` and `Rotation` components?
+//!
+//! While `Transform` can be used for the vast majority of things, Bevy XPBD internally
+//! uses separate [`Position`] and [`Rotation`] components. These are automatically
+//! kept in sync by the [`SyncPlugin`].
+//!
+//! There are several reasons why the separate components are currently used.
+//!
+//! - Position and rotation should be global from the physics engine's point of view.
+//! - Transform scale and shearing can cause issues and rounding errors in physics.
+//! - Transform hierarchies can be problematic.
+//! - There is no `f64` version of `Transform`.
+//! - There is no 2D version of `Transform` (yet), and having a 2D version can optimize several computations.
+//! - When position and rotation are separate, we can technically have more systems running in parallel.
+//! - Only rigid bodies have rotation, particles typically don't (although we don't make a distinction yet).
+//!
+//! In external projects however, using [`Position`] and [`Rotation`] is only necessary when you
+//! need to manage positions in the [`SubstepSchedule`]. Elsewhere, you should be able to use `Transform`.
+//!
+//! There is also a possibility that we will revisit this if/when Bevy has a `Transform2d` component.
+//! Using `Transform` feels more idiomatic and simple, so it would be nice if it could be used directly
+//! as long as we can get around the drawbacks.
+//!
 //! ### Can the engine be used on servers?
 //!
 //! Yes! Networking often requires running the simulation in a specific schedule, and in Bevy XPBD you can
-//! [set the schedule that runs physics](PhysicsPlugins#custom-schedule) and [configure the timestep](PhysicsTimestep)
+//! [set the schedule that runs physics](PhysicsPlugins#custom-schedule) and [configure the timestep](Physics)
 //! to whatever you want.
 //!
-//! One configuration is to run the client in `FixedUpdate`, and to use [`PhysicsTimestep::FixedOnce`] on both the
-//! server and the client to make sure the physics simulation is only advanced by one step each time the schedule runs.
+//! One configuration is to run the client in `FixedUpdate`, and to use a fixed timestep for [`Time<Physics>`](Physics)
+//! on both the server and the client to make sure the physics simulation is only advanced by one step
+//! each time the schedule runs.
 //!
 //! Note that while Bevy XPBD should be locally deterministic, it can produce slightly different results on different
 //! machines.
 //!
 //! ### Something else?
 //!
-//! Physics engines are very large and Bevy XPBD is very young, so stability issues and bugs are to be expected.
+//! Physics engines are very large and Bevy XPBD is young, so stability issues and bugs are to be expected.
 //!
 //! If you encounter issues, please consider first taking a look at the
 //! [issues on GitHub](https://github.com/Jondolf/bevy_xpbd/issues) and
@@ -344,7 +454,7 @@
 //!         solve_velocities(particles and bodies)
 //! ```
 //!
-//! where `h` is the [substep size](SubDeltaTime), `q` is the [rotation](Rotation) as a quaternion,
+//! where `h` is the substep size, `q` is the [rotation](Rotation) as a quaternion,
 //! `ω` is the [angular velocity](AngularVelocity), `I` is the [angular inertia tensor](`Inertia`) and `τ` is the
 //! [external torque](ExternalTorque).
 //!
@@ -397,24 +507,48 @@
 //! [^5]: [`SubstepSet`]
 
 #![allow(rustdoc::invalid_rust_codeblocks)]
-#![warn(missing_docs)]
+#![warn(clippy::doc_markdown, missing_docs)]
+
+#[cfg(all(not(feature = "f32"), not(feature = "f64")))]
+compile_error!("either feature \"f32\" or \"f64\" must be enabled");
 
 #[cfg(all(feature = "f32", feature = "f64"))]
 compile_error!("feature \"f32\" and feature \"f64\" cannot be enabled at the same time");
 
-#[cfg(all(feature = "2d", feature = "3d"))]
-compile_error!("feature \"f2d\" and feature \"3d\" cannot be enabled at the same time");
+#[cfg(all(not(feature = "2d"), not(feature = "3d")))]
+compile_error!("either feature \"2d\" or \"3d\" must be enabled");
 
-#[cfg(all(feature = "2d", feature = "f32"))]
+#[cfg(all(feature = "2d", feature = "3d"))]
+compile_error!("feature \"2d\" and feature \"3d\" cannot be enabled at the same time");
+
+#[cfg(all(
+    feature = "default-collider",
+    feature = "f32",
+    not(feature = "parry-f32")
+))]
+compile_error!(
+    "feature \"default-collider\" requires the feature \"parry-f32\" when \"f32\" is enabled"
+);
+
+#[cfg(all(
+    feature = "default-collider",
+    feature = "f64",
+    not(feature = "parry-f64")
+))]
+compile_error!(
+    "feature \"default-collider\" requires the feature \"parry-f64\" when \"f64\" is enabled"
+);
+
+#[cfg(all(feature = "2d", feature = "parry-f32"))]
 pub extern crate parry2d as parry;
 
-#[cfg(all(feature = "2d", feature = "f64"))]
+#[cfg(all(feature = "2d", feature = "parry-f64"))]
 pub extern crate parry2d_f64 as parry;
 
-#[cfg(all(feature = "3d", feature = "f32"))]
+#[cfg(all(feature = "3d", feature = "parry-f32"))]
 pub extern crate parry3d as parry;
 
-#[cfg(all(feature = "3d", feature = "f64"))]
+#[cfg(all(feature = "3d", feature = "parry-f64"))]
 pub extern crate parry3d_f64 as parry;
 
 pub mod components;
@@ -425,17 +559,30 @@ pub mod resources;
 
 /// Re-exports common components, bundles, resources, plugins and types.
 pub mod prelude {
+    #[cfg(feature = "debug-plugin")]
+    pub use crate::plugins::debug::*;
     pub use crate::{
         components::*,
         constraints::{joints::*, *},
-        plugins::*,
+        plugins::{
+            collision::{
+                broad_phase::BroadCollisionPairs,
+                contact_reporting::{Collision, CollisionEnded, CollisionStarted},
+                narrow_phase::NarrowPhaseConfig,
+                *,
+            },
+            prepare::{init_transforms, update_mass_properties, PrepareConfig, PreparePlugin},
+            setup::*,
+            solver::solve_constraint,
+            spatial_query::*,
+            *,
+        },
         resources::*,
-        PhysicsSet,
+        PhysicsSet, PostProcessCollisions,
     };
     pub(crate) use crate::{math::*, *};
     pub use bevy_xpbd_derive::*;
 }
-pub use prelude::setup::{pause, resume};
 
 mod utils;
 
@@ -447,7 +594,6 @@ use bevy::{
     ecs::schedule::{LogLevel, ScheduleLabel},
     prelude::*,
 };
-use parry::math::Isometry;
 #[allow(unused_imports)]
 use prelude::*;
 
@@ -463,6 +609,41 @@ pub struct PhysicsSchedule;
 /// See [`SubstepSet`] for the system sets that are run in this schedule.
 #[derive(Debug, Hash, PartialEq, Eq, Clone, ScheduleLabel)]
 pub struct SubstepSchedule;
+
+/// A schedule where you can add systems to filter or modify collisions
+/// using the [`Collisions`] resource.
+///
+/// The schedule is empty by default and runs in [`SubstepSet::PostProcessCollisions`].
+///
+/// ## Example
+///
+/// Below is an example of how you could add a system that filters collisions.
+///
+/// ```no_run
+/// use bevy::prelude::*;
+#[cfg_attr(feature = "2d", doc = "use bevy_xpbd_2d::prelude::*;")]
+#[cfg_attr(feature = "3d", doc = "use bevy_xpbd_3d::prelude::*;")]
+///
+/// #[derive(Component)]
+/// struct Invulnerable;
+///
+/// fn main() {
+///     App::new()
+///         .add_plugins((DefaultPlugins, PhysicsPlugins::default()))
+///         .add_systems(PostProcessCollisions, filter_collisions)
+///         .run();
+/// }
+///
+/// fn filter_collisions(mut collisions: ResMut<Collisions>, query: Query<(), With<Invulnerable>>) {
+///     // Remove collisions where one of the colliders has an `Invulnerable` component.
+///     // In a real project, this could be done more efficiently with collision layers.
+///     collisions.retain(|contacts| {
+///         !query.contains(contacts.entity1) && !query.contains(contacts.entity2)
+///     });
+/// }
+/// ```
+#[derive(Debug, Hash, PartialEq, Eq, Clone, ScheduleLabel)]
+pub struct PostProcessCollisions;
 
 /// High-level system sets for the main phases of the physics engine.
 /// You can use these to schedule your own systems before or after physics is run without
@@ -482,6 +663,8 @@ pub struct SubstepSchedule;
 /// - [`SubstepSchedule`]: Responsible for running the substepping loop in [`PhysicsStepSet::Substeps`].
 /// - [`SubstepSet`]: System sets for the steps of the substepping loop, like position integration and
 /// the constraint solver.
+/// - [`PostProcessCollisions`]: Responsible for running the post-process collisions group in
+/// [`SubstepSet::PostProcessCollisions`]. Empty by default.
 #[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PhysicsSet {
     /// Responsible for initializing [rigid bodies](RigidBody) and [colliders](Collider) and
@@ -508,8 +691,9 @@ pub enum PhysicsSet {
 ///     3. Solve positional and angular constraints
 ///     4. Update velocities
 ///     5. Solve velocity constraints (dynamic friction and restitution)
-/// 3. Sleeping
-/// 4. Spatial queries
+/// 3. Report contacts (send collision events)
+/// 4. Sleeping
+/// 5. Spatial queries
 #[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PhysicsStepSet {
     /// Responsible for collecting pairs of potentially colliding entities into [`BroadCollisionPairs`] using
@@ -521,11 +705,15 @@ pub enum PhysicsStepSet {
     ///
     /// See [`SubstepSet`] and [`SubstepSchedule`].
     Substeps,
+    /// Responsible for sending collision events and updating [`CollidingEntities`].
+    ///
+    /// See [`ContactReportingPlugin`].
+    ReportContacts,
     /// Responsible for controlling when bodies should be deactivated and marked as [`Sleeping`].
     ///
     /// See [`SleepingPlugin`].
     Sleeping,
-    /// Responsible for spatial queries like [ray casting](`RayCaster`) and shape casting.
+    /// Responsible for spatial queries like [raycasting](`RayCaster`) and shapecasting.
     ///
     /// See [`SpatialQueryPlugin`].
     SpatialQuery,
@@ -534,9 +722,13 @@ pub enum PhysicsStepSet {
 /// System sets for the the steps in the inner substepping loop. These are typically run in the [`SubstepSchedule`].
 ///
 /// 1. Integrate
-/// 2. Solve positional and angular constraints
-/// 3. Update velocities
-/// 4. Solve velocity constraints (dynamic friction and restitution)
+/// 2. Narrow phase
+/// 3. Post-process collisions
+/// 4. Solve positional and angular constraints
+/// 5. Update velocities
+/// 6. Solve velocity constraints (dynamic friction and restitution)
+/// 7. Store contact impulses in [`Collisions`].
+/// 8. Apply [`AccumulatedTranslation`] to positions.
 #[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SubstepSet {
     /// Responsible for integrating Newton's 2nd law of motion,
@@ -548,6 +740,14 @@ pub enum SubstepSet {
     ///
     /// See [`NarrowPhasePlugin`].
     NarrowPhase,
+    /// Responsible for running the [`PostProcessCollisions`] schedule to allow user-defined systems
+    /// to filter and modify collisions.
+    ///
+    /// If you want to modify or remove collisions after [`SubstepSet::NarrowPhase`], you can
+    /// add custom systems to this set, or to [`PostProcessCollisions`].
+    ///
+    /// See [`NarrowPhasePlugin`].
+    PostProcessCollisions,
     /// The [solver] iterates through [constraints] and solves them.
     ///
     /// **Note**: If you want to [create your own constraints](constraints#custom-constraints),
@@ -572,6 +772,10 @@ pub enum SubstepSet {
     ///
     /// See [`SolverPlugin`].
     SolveVelocities,
+    /// Contact impulses computed by the solver are stored in contacts in [`Collisions`].
+    ///
+    /// See [`SolverPlugin`].
+    StoreImpulses,
     /// Responsible for applying translation accumulated during the substep.
     ///
     /// See [`SolverPlugin`].

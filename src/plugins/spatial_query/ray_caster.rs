@@ -1,25 +1,32 @@
 use crate::prelude::*;
-use bevy::prelude::*;
+use bevy::{
+    ecs::entity::{EntityMapper, MapEntities},
+    prelude::*,
+};
+#[cfg(all(
+    feature = "default-collider",
+    any(feature = "parry-f32", feature = "parry-f64")
+))]
 use parry::query::{
     details::RayCompositeShapeToiAndNormalBestFirstVisitor, visitors::RayIntersectionsVisitor,
 };
 
-/// A component used for [ray casting](spatial_query#ray-casting).
+/// A component used for [raycasting](spatial_query#raycasting).
 ///
-/// **Ray casting** is a type of [spatial query](spatial_query) that finds one or more hits
+/// **Raycasting** is a type of [spatial query](spatial_query) that finds one or more hits
 /// between a ray and a set of colliders.
 ///
 /// Each ray is defined by a local `origin` and a `direction`. The [`RayCaster`] will find each hit
 /// and add them to the [`RayHits`] component. Each hit has a `time_of_impact` property
 /// which refers to how long the ray travelled, i.e. the distance between the `origin` and the point of intersection.
 ///
-/// The [`RayCaster`] is the easiest way to handle simple ray casts. If you want more control and don't want to
-/// perform ray casts every frame, consider using the [`SpatialQuery`] system parameter.
+/// The [`RayCaster`] is the easiest way to handle simple raycasts. If you want more control and don't want to
+/// perform raycasts every frame, consider using the [`SpatialQuery`] system parameter.
 ///
 /// ## Hit count and order
 ///
-/// The results of a ray cast are in an arbitrary order by default. You can iterate over them in the order of
-/// time of impact with the [`RayHits::iter_sorted`](RayHits#method.iter_sorted) method.
+/// The results of a raycast are in an arbitrary order by default. You can iterate over them in the order of
+/// time of impact with the [`RayHits::iter_sorted`] method.
 ///
 /// You can configure the maximum amount of hits for a ray using `max_hits`. By default this is unbounded,
 /// so you will get all hits. When the number or complexity of colliders is large, this can be very
@@ -41,10 +48,11 @@ use parry::query::{
 /// # #[cfg(all(feature = "3d", feature = "f32"))]
 /// fn setup(mut commands: Commands) {
 ///     // Spawn a ray at the center going right
-///     commands.spawn(RayCaster::new(Vec3::ZERO, Vec3::X));
+///     commands.spawn(RayCaster::new(Vec3::ZERO, Direction3d::X));
 ///     // ...spawn colliders and other things
 /// }
 ///
+/// # #[cfg(all(feature = "3d", feature = "f32"))]
 /// fn print_hits(query: Query<(&RayCaster, &RayHits)>) {
 ///     for (ray, hits) in &query {
 ///         // For the faster iterator that isn't sorted, use `.iter()`
@@ -52,7 +60,7 @@ use parry::query::{
 ///             println!(
 ///                 "Hit entity {:?} at {} with normal {}",
 ///                 hit.entity,
-///                 ray.origin + ray.direction * hit.time_of_impact,
+///                 ray.origin + *ray.direction * hit.time_of_impact,
 ///                 hit.normal,
 ///             );
 ///         }
@@ -60,6 +68,7 @@ use parry::query::{
 /// }
 /// ```
 #[derive(Component)]
+#[cfg_attr(feature = "serialize", derive(serde::Serialize, serde::Deserialize))]
 pub struct RayCaster {
     /// Controls if the ray caster is enabled.
     pub enabled: bool,
@@ -72,9 +81,9 @@ pub struct RayCaster {
     /// The local direction of the ray relative to the [`Rotation`] of the ray entity or its parent.
     ///
     /// To get the global direction, use the `global_direction` method.
-    pub direction: Vector,
+    pub direction: Dir,
     /// The global direction of the ray.
-    global_direction: Vector,
+    global_direction: Dir,
     /// The maximum distance the ray can travel. By default this is infinite, so the ray will travel
     /// until all hits up to `max_hits` have been checked.
     pub max_time_of_impact: Scalar,
@@ -90,6 +99,8 @@ pub struct RayCaster {
     /// If `solid` is false, the collider will be considered to have no interior, and the point of intersection
     /// will be at the collider shape's boundary.
     pub solid: bool,
+    /// If true, the ray caster ignores hits against its own [`Collider`]. This is the default.
+    pub ignore_self: bool,
     /// Rules that determine which colliders are taken into account in the query.
     pub query_filter: SpatialQueryFilter,
 }
@@ -100,22 +111,38 @@ impl Default for RayCaster {
             enabled: true,
             origin: Vector::ZERO,
             global_origin: Vector::ZERO,
-            direction: Vector::ZERO,
-            global_direction: Vector::ZERO,
+            direction: Dir::X,
+            global_direction: Dir::X,
             max_time_of_impact: Scalar::MAX,
             max_hits: u32::MAX,
             solid: true,
+            ignore_self: true,
             query_filter: SpatialQueryFilter::default(),
         }
     }
 }
 
+impl From<Ray> for RayCaster {
+    fn from(ray: Ray) -> Self {
+        RayCaster::from_ray(ray)
+    }
+}
+
 impl RayCaster {
     /// Creates a new [`RayCaster`] with a given origin and direction.
-    pub fn new(origin: Vector, direction: Vector) -> Self {
+    pub fn new(origin: Vector, direction: Dir) -> Self {
         Self {
             origin,
             direction,
+            ..default()
+        }
+    }
+
+    /// Creates a new [`RayCaster`] from a ray.
+    pub fn from_ray(ray: Ray) -> Self {
+        Self {
+            origin: ray.origin.adjust_precision(),
+            direction: ray.direction,
             ..default()
         }
     }
@@ -127,7 +154,7 @@ impl RayCaster {
     }
 
     /// Sets the ray direction.
-    pub fn with_direction(mut self, direction: Vector) -> Self {
+    pub fn with_direction(mut self, direction: Dir) -> Self {
         self.direction = direction;
         self
     }
@@ -139,6 +166,13 @@ impl RayCaster {
     /// will be at the collider shape's boundary.
     pub fn with_solidness(mut self, solid: bool) -> Self {
         self.solid = solid;
+        self
+    }
+
+    /// Sets if the ray caster should ignore hits against its own [`Collider`].
+    /// The default is true.
+    pub fn with_ignore_self(mut self, ignore: bool) -> Self {
+        self.ignore_self = ignore;
         self
     }
 
@@ -155,7 +189,7 @@ impl RayCaster {
     }
 
     /// Sets the ray caster's [query filter](SpatialQueryFilter) that controls which colliders
-    /// should be included or excluded by ray casts.
+    /// should be included or excluded by raycasts.
     pub fn with_query_filter(mut self, query_filter: SpatialQueryFilter) -> Self {
         self.query_filter = query_filter;
         self
@@ -177,7 +211,7 @@ impl RayCaster {
     }
 
     /// Returns the global direction of the ray.
-    pub fn global_direction(&self) -> Vector {
+    pub fn global_direction(&self) -> Dir {
         self.global_direction
     }
 
@@ -187,16 +221,34 @@ impl RayCaster {
     }
 
     /// Sets the global direction of the ray.
-    pub(crate) fn set_global_direction(&mut self, global_direction: Vector) {
+    pub(crate) fn set_global_direction(&mut self, global_direction: Dir) {
         self.global_direction = global_direction;
     }
 
-    pub(crate) fn cast(&self, hits: &mut RayHits, query_pipeline: &SpatialQueryPipeline) {
+    #[cfg(all(
+        feature = "default-collider",
+        any(feature = "parry-f32", feature = "parry-f64")
+    ))]
+    pub(crate) fn cast(
+        &self,
+        caster_entity: Entity,
+        hits: &mut RayHits,
+        query_pipeline: &SpatialQueryPipeline,
+    ) {
+        let mut query_filter = self.query_filter.clone();
+
+        if self.ignore_self {
+            query_filter.excluded_entities.insert(caster_entity);
+        }
+
         hits.count = 0;
+
         if self.max_hits == 1 {
-            let pipeline_shape = query_pipeline.as_composite_shape(self.query_filter.clone());
-            let ray =
-                parry::query::Ray::new(self.global_origin().into(), self.global_direction().into());
+            let pipeline_shape = query_pipeline.as_composite_shape(query_filter);
+            let ray = parry::query::Ray::new(
+                self.global_origin().into(),
+                self.global_direction().adjust_precision().into(),
+            );
             let mut visitor = RayCompositeShapeToiAndNormalBestFirstVisitor::new(
                 &pipeline_shape,
                 &ray,
@@ -219,14 +271,16 @@ impl RayCaster {
                 hits.count = 1;
             }
         } else {
-            let ray =
-                parry::query::Ray::new(self.global_origin().into(), self.global_direction().into());
+            let ray = parry::query::Ray::new(
+                self.global_origin().into(),
+                self.global_direction().adjust_precision().into(),
+            );
 
             let mut leaf_callback = &mut |entity_index: &u32| {
                 let entity = query_pipeline.entity_from_index(*entity_index);
                 if let Some((iso, shape, layers)) = query_pipeline.colliders.get(&entity) {
-                    if self.query_filter.test(entity, *layers) {
-                        if let Some(hit) = shape.cast_ray_and_get_normal(
+                    if query_filter.test(entity, *layers) {
+                        if let Some(hit) = shape.shape_scaled().cast_ray_and_get_normal(
                             iso,
                             &ray,
                             self.max_time_of_impact,
@@ -299,6 +353,7 @@ impl RayCaster {
 /// }
 /// ```
 #[derive(Component, Clone, Default)]
+#[cfg_attr(feature = "serialize", derive(serde::Serialize, serde::Deserialize))]
 pub struct RayHits {
     pub(crate) vector: Vec<RayHitData>,
     /// The number of hits.
@@ -345,8 +400,17 @@ impl RayHits {
     }
 }
 
-/// Data related to a hit during a [ray cast](spatial_query#ray-casting).
-#[derive(Clone, Copy, Debug)]
+impl MapEntities for RayHits {
+    fn map_entities<M: EntityMapper>(&mut self, entity_mapper: &mut M) {
+        for hit in &mut self.vector {
+            hit.map_entities(entity_mapper);
+        }
+    }
+}
+
+/// Data related to a hit during a [raycast](spatial_query#raycasting).
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serialize", derive(serde::Serialize, serde::Deserialize))]
 pub struct RayHitData {
     /// The entity of the collider that was hit by the ray.
     pub entity: Entity,
@@ -354,4 +418,10 @@ pub struct RayHitData {
     pub time_of_impact: Scalar,
     /// The normal at the point of intersection.
     pub normal: Vector,
+}
+
+impl MapEntities for RayHitData {
+    fn map_entities<M: EntityMapper>(&mut self, entity_mapper: &mut M) {
+        self.entity = entity_mapper.map_entity(self.entity);
+    }
 }

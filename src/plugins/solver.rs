@@ -5,9 +5,12 @@
 
 use crate::{
     prelude::*,
-    utils::{compute_dynamic_friction, compute_restitution},
+    utils::{compute_dynamic_friction, compute_restitution, get_pos_translation},
 };
-use bevy::prelude::*;
+use bevy::{
+    ecs::query::{Has, QueryData},
+    prelude::*,
+};
 use constraints::penetration::PenetrationConstraint;
 
 /// Solves positional and angular [constraints], updates velocities and solves velocity constraints
@@ -67,59 +70,174 @@ impl Plugin for SolverPlugin {
                 .in_set(SubstepSet::SolveVelocities),
         );
 
+        substeps.add_systems(store_contact_impulses.in_set(SubstepSet::StoreImpulses));
+
         substeps.add_systems(apply_translation.in_set(SubstepSet::ApplyTranslation));
     }
 }
 
 /// Stores penetration constraints for colliding entity pairs.
 #[derive(Resource, Debug, Default)]
+#[cfg_attr(feature = "serialize", derive(serde::Serialize, serde::Deserialize))]
 pub struct PenetrationConstraints(pub Vec<PenetrationConstraint>);
+
+/// A `WorldQuery` to make code handling colliders in collisions cleaner.
+#[derive(QueryData)]
+struct ColliderQuery<'w> {
+    entity: Entity,
+    parent: Option<&'w ColliderParent>,
+    transform: Option<&'w ColliderTransform>,
+    is_sensor: Has<Sensor>,
+    friction: Option<&'w Friction>,
+    restitution: Option<&'w Restitution>,
+}
 
 /// Iterates through broad phase collision pairs, checks which ones are actually colliding, and uses [`PenetrationConstraint`]s to resolve the collisions.
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::type_complexity)]
 fn penetration_constraints(
     mut commands: Commands,
-    mut bodies: Query<(RigidBodyQuery, Option<&Sensor>, Option<&Sleeping>)>,
+    mut bodies: Query<(
+        RigidBodyQuery,
+        Option<&Name>,
+        Option<&Sensor>,
+        Option<&Sleeping>,
+    )>,
+    colliders: Query<ColliderQuery>,
     mut penetration_constraints: ResMut<PenetrationConstraints>,
-    collisions: Res<Collisions>,
-    sub_dt: Res<SubDeltaTime>,
+    mut collisions: ResMut<Collisions>,
+    time: Res<Time>,
 ) {
+    let delta_secs = time.delta_seconds_adjusted();
+
     penetration_constraints.0.clear();
 
-    for ((entity1, entity2), contacts) in collisions
-        .0
-        .iter()
+    for ((collider_entity1, collider_entity2), contacts) in collisions
+        .get_internal_mut()
+        .iter_mut()
         .filter(|(_, contacts)| contacts.during_current_substep)
     {
-        if let Ok([bundle1, bundle2]) = bodies.get_many_mut([*entity1, *entity2]) {
-            let (mut body1, sensor1, sleeping1) = bundle1;
-            let (mut body2, sensor2, sleeping2) = bundle2;
+        // Don't collide with self
+        if collider_entity1 == collider_entity2 {
+            continue;
+        }
+
+        // Get colliders
+        let Ok([collider1, collider2]) = colliders.get_many([*collider_entity1, *collider_entity2])
+        else {
+            continue;
+        };
+
+        let collider_parent1 = collider1.parent.map_or(*collider_entity1, |p| p.get());
+        let collider_parent2 = collider2.parent.map_or(*collider_entity2, |p| p.get());
+
+        // Reset penetration state for this substep.
+        // This is set to true if any of the contacts is penetrating.
+        contacts.during_current_substep = false;
+
+        if let Ok([bundle1, bundle2]) = bodies.get_many_mut([collider_parent1, collider_parent2]) {
+            let (mut body1, name1, sensor1, sleeping1) = bundle1;
+            let (mut body2, name2, sensor2, sleeping2) = bundle2;
 
             let inactive1 = body1.rb.is_static() || sleeping1.is_some();
             let inactive2 = body2.rb.is_static() || sleeping2.is_some();
 
-            // No collision if one of the bodies is static and the other one is sleeping.
-            if inactive1 && inactive2 {
+            let body1_is_sensor = contacts.entity1 == body1.entity && sensor1.is_some();
+            let body2_is_sensor = contacts.entity2 == body2.entity && sensor2.is_some();
+
+            // No collision response if both bodies are static or sleeping
+            // or if either of the colliders is a sensor collider.
+            if (inactive1 && inactive2)
+                || body1_is_sensor
+                || body2_is_sensor
+                || collider1.is_sensor
+                || collider2.is_sensor
+            {
                 continue;
             }
 
-            // Create and solve constraint if both colliders are solid
-            if sensor1.is_none() && sensor2.is_none() {
-                // When an active body collides with a sleeping body, wake up the sleeping body
-                if sleeping1.is_some() {
-                    commands.entity(*entity1).remove::<Sleeping>();
-                } else if sleeping2.is_some() {
-                    commands.entity(*entity2).remove::<Sleeping>();
-                }
+            // When an active body collides with a sleeping body, wake up the sleeping body.
+            if sleeping1.is_some() {
+                commands.entity(body1.entity).remove::<Sleeping>();
+            } else if sleeping2.is_some() {
+                commands.entity(body2.entity).remove::<Sleeping>();
+            }
 
-                for contact_manifold in contacts.manifolds.iter() {
-                    for contact in contact_manifold.contacts.iter() {
-                        let mut constraint = PenetrationConstraint::new(&body1, &body2, *contact);
-                        constraint.solve([&mut body1, &mut body2], sub_dt.0);
-                        penetration_constraints.0.push(constraint);
+            // Get combined friction and restitution coefficients of the colliders
+            // or the bodies they are attached to.
+            let friction = collider1
+                .friction
+                .unwrap_or(body1.friction)
+                .combine(*collider2.friction.unwrap_or(body2.friction));
+            let restitution = collider1
+                .restitution
+                .unwrap_or(body1.restitution)
+                .combine(*collider2.restitution.unwrap_or(body2.restitution));
+
+            // Create and solve penetration constraints for each contact.
+            for (manifold_index, manifold) in contacts.manifolds.iter().enumerate() {
+                for contact in manifold.contacts.iter() {
+                    // Add collider transforms to local contact points
+                    let contact = ContactData {
+                        point1: collider1.transform.map_or(contact.point1, |t| {
+                            t.rotation.rotate(contact.point1) + t.translation
+                        }),
+                        point2: collider2.transform.map_or(contact.point2, |t| {
+                            t.rotation.rotate(contact.point2) + t.translation
+                        }),
+                        normal1: collider1
+                            .transform
+                            .map_or(contact.normal1, |t| t.rotation.rotate(contact.normal1)),
+                        normal2: collider2
+                            .transform
+                            .map_or(contact.normal2, |t| t.rotation.rotate(contact.normal2)),
+                        ..*contact
+                    };
+
+                    let mut constraint = PenetrationConstraint {
+                        friction,
+                        restitution,
+                        ..PenetrationConstraint::new(
+                            &body1,
+                            &body2,
+                            *collider_entity1,
+                            *collider_entity2,
+                            contact,
+                            manifold_index,
+                        )
+                    };
+                    constraint.solve([&mut body1, &mut body2], delta_secs);
+                    penetration_constraints.0.push(constraint);
+
+                    // Set collision as penetrating for this frame and substep.
+                    // This is used for detecting when the collision has started or ended.
+                    if contact.penetration > Scalar::EPSILON {
+                        contacts.during_current_frame = true;
+                        contacts.during_current_substep = true;
                     }
                 }
+            }
+
+            if contacts.during_current_substep
+                && (body1.rb.is_added() || body2.rb.is_added())
+                && body1.rb.is_dynamic()
+                && body2.rb.is_dynamic()
+            {
+                // if the RigidBody entity has a name, use that for debug.
+                let debug_id1 = match name1 {
+                    Some(n) => format!("{:?} ({n})", body1.entity),
+                    None => format!("{:?}", body1.entity),
+                };
+                let debug_id2 = match name2 {
+                    Some(n) => format!("{:?} ({n})", body2.entity),
+                    None => format!("{:?}", body2.entity),
+                };
+                warn!(
+                    "{} and {} are overlapping at spawn, which can result in explosive behavior.",
+                    debug_id1, debug_id2,
+                );
+                debug!("{} is at {}", debug_id1, body1.position.0);
+                debug!("{} is at {}", debug_id2, body2.position.0);
             }
         }
     }
@@ -153,8 +271,10 @@ pub fn solve_constraint<C: XpbdConstraint<ENTITY_COUNT> + Component, const ENTIT
     mut commands: Commands,
     mut bodies: Query<(RigidBodyQuery, Option<&Sleeping>)>,
     mut constraints: Query<&mut C, Without<RigidBody>>,
-    sub_dt: Res<SubDeltaTime>,
+    time: Res<Time>,
 ) {
+    let delta_secs = time.delta_seconds_adjusted();
+
     // Clear Lagrange multipliers
     constraints
         .iter_mut()
@@ -188,7 +308,7 @@ pub fn solve_constraint<C: XpbdConstraint<ENTITY_COUNT> + Component, const ENTIT
                 .collect::<Vec<&mut RigidBodyQueryItem>>()
                 .try_into()
             {
-                constraint.solve(bodies, sub_dt.0);
+                constraint.solve(bodies, delta_secs);
             }
         }
     }
@@ -208,11 +328,13 @@ fn update_lin_vel(
         ),
         Without<Sleeping>,
     >,
-    sub_dt: Res<SubDeltaTime>,
+    time: Res<Time>,
 ) {
+    let delta_secs = time.delta_seconds_adjusted();
+
     for (rb, pos, prev_pos, translation, mut lin_vel, mut pre_solve_lin_vel) in &mut bodies {
         // Static bodies have no velocity
-        if rb.is_static() {
+        if rb.is_static() && lin_vel.0 != Vector::ZERO {
             lin_vel.0 = Vector::ZERO;
         }
 
@@ -220,7 +342,11 @@ fn update_lin_vel(
 
         if rb.is_dynamic() {
             // v = (x - x_prev) / h
-            lin_vel.0 = (pos.0 - prev_pos.0 + translation.0) / sub_dt.0;
+            let new_lin_vel = (pos.0 - prev_pos.0 + translation.0) / delta_secs;
+            // avoid triggering bevy's change detection unnecessarily
+            if new_lin_vel != lin_vel.0 && new_lin_vel.is_finite() {
+                lin_vel.0 = new_lin_vel;
+            }
         }
     }
 }
@@ -238,18 +364,24 @@ fn update_ang_vel(
         ),
         Without<Sleeping>,
     >,
-    sub_dt: Res<SubDeltaTime>,
+    time: Res<Time>,
 ) {
+    let delta_secs = time.delta_seconds_adjusted();
+
     for (rb, rot, prev_rot, mut ang_vel, mut pre_solve_ang_vel) in &mut bodies {
         // Static bodies have no velocity
-        if rb.is_static() {
+        if rb.is_static() && ang_vel.0 != 0.0 {
             ang_vel.0 = 0.0;
         }
 
         pre_solve_ang_vel.0 = ang_vel.0;
 
         if rb.is_dynamic() {
-            ang_vel.0 = (rot.mul(prev_rot.inverse())).as_radians() / sub_dt.0;
+            let new_ang_vel = (rot.mul(prev_rot.inverse())).as_radians() / delta_secs;
+            // avoid triggering bevy's change detection unnecessarily
+            if new_ang_vel != ang_vel.0 && new_ang_vel.is_finite() {
+                ang_vel.0 = new_ang_vel;
+            }
         }
     }
 }
@@ -267,11 +399,13 @@ fn update_ang_vel(
         ),
         Without<Sleeping>,
     >,
-    sub_dt: Res<SubDeltaTime>,
+    time: Res<Time>,
 ) {
+    let delta_secs = time.delta_seconds_adjusted();
+
     for (rb, rot, prev_rot, mut ang_vel, mut pre_solve_ang_vel) in &mut bodies {
         // Static bodies have no velocity
-        if rb.is_static() {
+        if rb.is_static() && ang_vel.0 != Vector::ZERO {
             ang_vel.0 = Vector::ZERO;
         }
 
@@ -279,10 +413,13 @@ fn update_ang_vel(
 
         if rb.is_dynamic() {
             let delta_rot = rot.mul_quat(prev_rot.inverse().0);
-            ang_vel.0 = 2.0 * delta_rot.xyz() / sub_dt.0;
-
+            let mut new_ang_vel = 2.0 * delta_rot.xyz() / delta_secs;
             if delta_rot.w < 0.0 {
-                ang_vel.0 = -ang_vel.0;
+                new_ang_vel = -new_ang_vel;
+            }
+            // avoid triggering bevy's change detection unnecessarily
+            if new_ang_vel != ang_vel.0 && new_ang_vel.is_finite() {
+                ang_vel.0 = new_ang_vel;
             }
         }
     }
@@ -292,11 +429,13 @@ fn update_ang_vel(
 #[allow(clippy::type_complexity)]
 fn solve_vel(
     mut bodies: Query<RigidBodyQuery, Without<Sleeping>>,
-    penetration_constraints: Res<PenetrationConstraints>,
+    mut penetration_constraints: ResMut<PenetrationConstraints>,
     gravity: Res<Gravity>,
-    sub_dt: Res<SubDeltaTime>,
+    time: Res<Time>,
 ) {
-    for constraint in penetration_constraints.0.iter() {
+    let delta_secs = time.delta_seconds_adjusted();
+
+    for constraint in penetration_constraints.0.iter_mut() {
         if let Ok([mut body1, mut body2]) = bodies.get_many_mut(constraint.entities()) {
             if !body1.rb.is_dynamic() && !body2.rb.is_dynamic() {
                 continue;
@@ -307,7 +446,7 @@ fn solve_vel(
                 continue;
             }
 
-            let normal = constraint.contact.global_normal(&body1.rotation);
+            let normal = constraint.contact.global_normal1(&body1.rotation);
             let r1 = body1.rotation.rotate(constraint.r1);
             let r2 = body2.rotation.rotate(constraint.r2);
 
@@ -347,64 +486,85 @@ fn solve_vel(
             let restitution_speed = compute_restitution(
                 normal_speed,
                 pre_solve_normal_speed,
-                body1.restitution.combine(*body2.restitution).coefficient,
+                constraint.restitution.coefficient,
                 gravity.0,
-                sub_dt.0,
+                delta_secs,
             );
-            if restitution_speed > Scalar::EPSILON {
+            if restitution_speed.abs() > Scalar::EPSILON {
                 let w1 = constraint.compute_generalized_inverse_mass(&body1, r1, normal);
                 let w2 = constraint.compute_generalized_inverse_mass(&body2, r2, normal);
-                p += restitution_speed / (w1 + w2) * normal;
+                let restitution_impulse = restitution_speed / (w1 + w2);
+                p += restitution_impulse * normal;
+                constraint.contact.normal_impulse += restitution_impulse;
             }
 
             // Compute dynamic friction
             if tangent_speed > Scalar::EPSILON {
-                let tangent_dir = tangent_vel / tangent_speed;
-                let w1 = constraint.compute_generalized_inverse_mass(&body1, r1, tangent_dir);
-                let w2 = constraint.compute_generalized_inverse_mass(&body2, r2, tangent_dir);
+                let tangent = tangent_vel / tangent_speed;
+                let w1 = constraint.compute_generalized_inverse_mass(&body1, r1, tangent);
+                let w2 = constraint.compute_generalized_inverse_mass(&body2, r2, tangent);
                 let friction_impulse = compute_dynamic_friction(
                     tangent_speed,
                     w1 + w2,
-                    body1.friction.combine(*body2.friction).dynamic_coefficient,
+                    constraint.friction.dynamic_coefficient,
                     constraint.normal_lagrange,
-                    sub_dt.0,
+                    delta_secs,
                 );
-                p += friction_impulse * tangent_dir;
+                p += friction_impulse * tangent;
+                constraint.contact.tangent_impulse += friction_impulse;
             }
 
-            if body1.rb.is_dynamic() {
-                body1.linear_velocity.0 += p * inv_mass1;
-                body1.angular_velocity.0 += compute_delta_ang_vel(inv_inertia1, r1, p);
+            if body1.rb.is_dynamic() && body1.dominance() <= body2.dominance() {
+                let delta_lin_vel = p * inv_mass1;
+                let delta_ang_vel = compute_delta_ang_vel(inv_inertia1, r1, p);
+
+                if delta_lin_vel != Vector::ZERO {
+                    body1.linear_velocity.0 += delta_lin_vel;
+                }
+                if delta_ang_vel != AngularVelocity::ZERO.0 {
+                    body1.angular_velocity.0 += delta_ang_vel;
+                }
             }
-            if body2.rb.is_dynamic() {
-                body2.linear_velocity.0 -= p * inv_mass2;
-                body2.angular_velocity.0 -= compute_delta_ang_vel(inv_inertia2, r2, p);
+            if body2.rb.is_dynamic() && body2.dominance() <= body1.dominance() {
+                let delta_lin_vel = p * inv_mass2;
+                let delta_ang_vel = compute_delta_ang_vel(inv_inertia2, r2, p);
+
+                if delta_lin_vel != Vector::ZERO {
+                    body2.linear_velocity.0 -= delta_lin_vel;
+                }
+                if delta_ang_vel != AngularVelocity::ZERO.0 {
+                    body2.angular_velocity.0 -= delta_ang_vel;
+                }
             }
         }
     }
 }
 
 /// Applies velocity corrections caused by joint damping.
-fn joint_damping<T: Joint>(
+#[allow(clippy::type_complexity)]
+pub fn joint_damping<T: Joint>(
     mut bodies: Query<
         (
             &RigidBody,
             &mut LinearVelocity,
             &mut AngularVelocity,
             &InverseMass,
+            Option<&Dominance>,
         ),
         Without<Sleeping>,
     >,
     joints: Query<&T, Without<RigidBody>>,
-    sub_dt: Res<SubDeltaTime>,
+    time: Res<Time>,
 ) {
+    let delta_secs = time.delta_seconds_adjusted();
+
     for joint in &joints {
         if let Ok(
-            [(rb1, mut lin_vel1, mut ang_vel1, inv_mass1), (rb2, mut lin_vel2, mut ang_vel2, inv_mass2)],
+            [(rb1, mut lin_vel1, mut ang_vel1, inv_mass1, dominance1), (rb2, mut lin_vel2, mut ang_vel2, inv_mass2, dominance2)],
         ) = bodies.get_many_mut(joint.entities())
         {
             let delta_omega =
-                (ang_vel2.0 - ang_vel1.0) * (joint.damping_angular() * sub_dt.0).min(1.0);
+                (ang_vel2.0 - ang_vel1.0) * (joint.damping_angular() * delta_secs).min(1.0);
 
             if rb1.is_dynamic() {
                 ang_vel1.0 += delta_omega;
@@ -413,7 +573,8 @@ fn joint_damping<T: Joint>(
                 ang_vel2.0 -= delta_omega;
             }
 
-            let delta_v = (lin_vel2.0 - lin_vel1.0) * (joint.damping_linear() * sub_dt.0).min(1.0);
+            let delta_v =
+                (lin_vel2.0 - lin_vel1.0) * (joint.damping_linear() * delta_secs).min(1.0);
 
             let w1 = if rb1.is_dynamic() { inv_mass1.0 } else { 0.0 };
             let w2 = if rb2.is_dynamic() { inv_mass2.0 } else { 0.0 };
@@ -424,28 +585,65 @@ fn joint_damping<T: Joint>(
 
             let p = delta_v / (w1 + w2);
 
-            if rb1.is_dynamic() {
+            let dominance1 = dominance1.map_or(0, |dominance| dominance.0);
+            let dominance2 = dominance2.map_or(0, |dominance| dominance.0);
+
+            if rb1.is_dynamic() && (!rb2.is_dynamic() || dominance1 <= dominance2) {
                 lin_vel1.0 += p * inv_mass1.0;
             }
-            if rb2.is_dynamic() {
+            if rb2.is_dynamic() && (!rb1.is_dynamic() || dominance2 <= dominance1) {
                 lin_vel2.0 -= p * inv_mass2.0;
             }
         }
     }
 }
 
+fn store_contact_impulses(
+    constraints: Res<PenetrationConstraints>,
+    mut collisions: ResMut<Collisions>,
+) {
+    for constraint in constraints.0.iter() {
+        let Some(collision) =
+            collisions.get_mut(constraint.collider_entity1, constraint.collider_entity2)
+        else {
+            continue;
+        };
+        if let Some(Some(contact)) = collision
+            .manifolds
+            .get_mut(constraint.manifold_index)
+            .map(|m| m.contacts.get_mut(constraint.contact.index))
+        {
+            contact.normal_impulse = constraint.contact.normal_impulse;
+            contact.tangent_impulse = constraint.contact.tangent_impulse;
+
+            collision.total_normal_impulse += contact.normal_impulse.abs();
+            collision.total_tangent_impulse += contact.tangent_impulse.abs();
+        }
+    }
+}
+
+#[allow(clippy::type_complexity)]
 fn apply_translation(
     mut bodies: Query<
-        (&RigidBody, &mut Position, &mut AccumulatedTranslation),
+        (
+            &RigidBody,
+            &mut Position,
+            &Rotation,
+            &PreviousRotation,
+            &mut AccumulatedTranslation,
+            &CenterOfMass,
+        ),
         Changed<AccumulatedTranslation>,
     >,
 ) {
-    for (rb, mut pos, mut translation) in &mut bodies {
+    for (rb, mut pos, rot, prev_rot, mut translation, center_of_mass) in &mut bodies {
         if rb.is_static() {
             continue;
         }
 
-        pos.0 += translation.0;
+        // We must also account for the translation caused by rotations around the center of mass,
+        // as it may be offset from `Position`.
+        pos.0 += get_pos_translation(&translation, prev_rot, rot, center_of_mass);
         translation.0 = Vector::ZERO;
     }
 }

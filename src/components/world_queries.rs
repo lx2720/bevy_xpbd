@@ -1,15 +1,15 @@
 #![allow(missing_docs)]
 
-use crate::prelude::*;
-use bevy::ecs::query::WorldQuery;
+use crate::{prelude::*, utils::get_pos_translation};
+use bevy::ecs::query::QueryData;
 use std::ops::{AddAssign, SubAssign};
 
-/// A [`WorldQuery`] to make querying and modifying rigid bodies more convenient.
-#[derive(WorldQuery)]
-#[world_query(mutable)]
+/// A `WorldQuery` to make querying and modifying rigid bodies more convenient.
+#[derive(QueryData)]
+#[query_data(mutable)]
 pub struct RigidBodyQuery {
     pub entity: Entity,
-    pub rb: &'static mut RigidBody,
+    pub rb: Ref<'static, RigidBody>,
     pub position: &'static mut Position,
     pub rotation: &'static mut Rotation,
     pub previous_position: &'static mut PreviousPosition,
@@ -24,9 +24,10 @@ pub struct RigidBodyQuery {
     pub inertia: &'static mut Inertia,
     pub inverse_inertia: &'static mut InverseInertia,
     pub center_of_mass: &'static mut CenterOfMass,
-    pub friction: &'static mut Friction,
-    pub restitution: &'static mut Restitution,
+    pub friction: &'static Friction,
+    pub restitution: &'static Restitution,
     pub locked_axes: Option<&'static LockedAxes>,
+    pub dominance: Option<&'static Dominance>,
 }
 
 impl<'w> RigidBodyQueryItem<'w> {
@@ -68,27 +69,36 @@ impl<'w> RigidBodyQueryItem<'w> {
     /// Returns the current position of the body. This is a sum of the [`Position`] and
     /// [`AccumulatedTranslation`] components.
     pub fn current_position(&self) -> Vector {
-        self.position.0 + self.accumulated_translation.0
+        self.position.0
+            + get_pos_translation(
+                &self.accumulated_translation,
+                &self.previous_rotation,
+                &self.rotation,
+                &self.center_of_mass,
+            )
+    }
+
+    /// Returns the [dominance](Dominance) of the body.
+    ///
+    /// If it isn't specified, the default of `0` is returned for dynamic bodies.
+    /// For static and kinematic bodies, `i8::MAX` (`127`) is always returned instead.
+    pub fn dominance(&self) -> i8 {
+        if !self.rb.is_dynamic() {
+            i8::MAX
+        } else {
+            self.dominance.map_or(0, |dominance| dominance.0)
+        }
     }
 }
 
-#[derive(WorldQuery)]
-#[world_query(mutable)]
-pub(crate) struct MassPropertiesQuery {
+#[derive(QueryData)]
+#[query_data(mutable)]
+pub struct MassPropertiesQuery {
     pub mass: &'static mut Mass,
     pub inverse_mass: &'static mut InverseMass,
     pub inertia: &'static mut Inertia,
     pub inverse_inertia: &'static mut InverseInertia,
     pub center_of_mass: &'static mut CenterOfMass,
-}
-
-#[derive(WorldQuery)]
-#[world_query(mutable)]
-pub(crate) struct ColliderQuery {
-    pub collider: &'static mut Collider,
-    pub aabb: &'static mut ColliderAabb,
-    pub mass_properties: &'static mut ColliderMassProperties,
-    pub previous_mass_properties: &'static mut PreviousColliderMassProperties,
 }
 
 impl<'w> AddAssign<ColliderMassProperties> for MassPropertiesQueryItem<'w> {
@@ -152,7 +162,7 @@ mod tests {
     use approx::assert_relative_eq;
     use bevy::prelude::*;
 
-    // Todo: Test if inertia values are correct
+    // TODO: Test if inertia values are correct
     #[test]
     fn mass_properties_add_assign_works() {
         // Create app
@@ -191,7 +201,7 @@ mod tests {
         );
     }
 
-    // Todo: Test if inertia values are correct
+    // TODO: Test if inertia values are correct
     #[test]
     fn mass_properties_sub_assign_works() {
         // Create app
@@ -232,6 +242,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(
+        feature = "default-collider",
+        any(feature = "parry-f32", feature = "parry-f64")
+    ))]
     fn mass_properties_add_sub_works() {
         // Create app
         let mut app = App::new();
@@ -244,8 +258,7 @@ mod tests {
         app.world.spawn(original_mass_props.clone());
 
         // Create collider mass properties
-        let collider_mass_props =
-            ColliderMassProperties::new_computed(&Collider::capsule(7.4, 2.1), 14.3);
+        let collider_mass_props = Collider::capsule(7.4, 2.1).mass_properties(14.3);
 
         // Get the mass properties and then add and subtract the collider mass properties
         let mut query = app.world.query::<MassPropertiesQuery>();

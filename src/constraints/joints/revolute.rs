@@ -1,12 +1,16 @@
 //! [`RevoluteJoint`] component.
 
 use crate::prelude::*;
-use bevy::prelude::*;
+use bevy::{
+    ecs::entity::{EntityMapper, MapEntities},
+    prelude::*,
+};
 
 /// A revolute joint prevents relative movement of the attached bodies, except for rotation around one `aligned_axis`.
 ///
 /// Revolute joints can be useful for things like wheels, fans, revolving doors etc.
 #[derive(Component, Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serialize", derive(serde::Serialize, serde::Deserialize))]
 pub struct RevoluteJoint {
     /// First entity constrained by the joint.
     pub entity1: Entity,
@@ -218,3 +222,10 @@ impl RevoluteJoint {
 impl PositionConstraint for RevoluteJoint {}
 
 impl AngularConstraint for RevoluteJoint {}
+
+impl MapEntities for RevoluteJoint {
+    fn map_entities<M: EntityMapper>(&mut self, entity_mapper: &mut M) {
+        self.entity1 = entity_mapper.map_entity(self.entity1);
+        self.entity2 = entity_mapper.map_entity(self.entity2);
+    }
+}

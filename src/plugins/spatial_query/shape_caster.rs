@@ -1,22 +1,25 @@
 use crate::prelude::*;
-use bevy::prelude::*;
+use bevy::{
+    ecs::entity::{EntityMapper, MapEntities},
+    prelude::*,
+};
 use parry::query::details::TOICompositeShapeShapeBestFirstVisitor;
 
-/// A component used for [shape casting](spatial_query#shape-casting).
+/// A component used for [shapecasting](spatial_query#shapecasting).
 ///
-/// **Shape casting** is a type of [spatial query](spatial_query) where a shape travels along a straight
+/// **Shapecasting** is a type of [spatial query](spatial_query) where a shape travels along a straight
 /// line and computes hits with colliders. This is often used to determine how far an object can move
 /// in a direction before it hits something.
 ///
-/// Each shape cast is defined by a `shape` (a [`Collider`]), its local `shape_rotation`, a local `origin` and
+/// Each shapecast is defined by a `shape` (a [`Collider`]), its local `shape_rotation`, a local `origin` and
 /// a local `direction`. The [`ShapeCaster`] will find each hit and add them to the [`ShapeHits`] component in
 /// the order of the time of impact.
 ///
 /// Computing lots of hits can be expensive, especially against complex geometry, so the maximum number of hits
 /// is one by default. This can be configured through the `max_hits` property.
 ///
-/// The [`ShapeCaster`] is the easiest way to handle simple shape casting. If you want more control and don't want
-/// to perform shape casts on every frame, consider using the [`SpatialQuery`] system parameter.
+/// The [`ShapeCaster`] is the easiest way to handle simple shapecasting. If you want more control and don't want
+/// to perform shapecasts on every frame, consider using the [`SpatialQuery`] system parameter.
 ///
 /// ## Example
 ///
@@ -31,10 +34,11 @@ use parry::query::details::TOICompositeShapeShapeBestFirstVisitor;
 /// fn setup(mut commands: Commands) {
 ///     // Spawn a shape caster with a ball shape moving right starting from the origin
 ///     commands.spawn(ShapeCaster::new(
-///         Collider::ball(0.5),
+#[cfg_attr(feature = "2d", doc = "        Collider::circle(0.5),")]
+#[cfg_attr(feature = "3d", doc = "        Collider::sphere(0.5),")]
 ///         Vec3::ZERO,
 ///         Quat::default(),
-///         Vec3::X
+///         Direction3d::X,
 ///     ));
 /// }
 ///
@@ -47,6 +51,7 @@ use parry::query::details::TOICompositeShapeShapeBestFirstVisitor;
 /// }
 /// ```
 #[derive(Component)]
+#[cfg_attr(feature = "serialize", derive(serde::Serialize, serde::Deserialize))]
 pub struct ShapeCaster {
     /// Controls if the shape caster is enabled.
     pub enabled: bool,
@@ -77,24 +82,26 @@ pub struct ShapeCaster {
     /// The global rotation of the shape.
     #[cfg(feature = "3d")]
     global_shape_rotation: Quaternion,
-    /// The local direction of the shape cast relative to the [`Rotation`] of the shape caster entity or its parent.
+    /// The local direction of the shapecast relative to the [`Rotation`] of the shape caster entity or its parent.
     ///
     /// To get the global direction, use the `global_direction` method.
-    pub direction: Vector,
-    /// The global direction of the shape cast.
-    global_direction: Vector,
+    pub direction: Dir,
+    /// The global direction of the shapecast.
+    global_direction: Dir,
     /// The maximum distance the shape can travel. By default this is infinite, so the shape will travel
     /// until a hit is found.
     pub max_time_of_impact: Scalar,
     /// The maximum number of hits allowed. By default this is one and only the first hit is returned.
     pub max_hits: u32,
-    /// Controls how the shape cast behaves when the shape is already penetrating a [collider](Collider)
+    /// Controls how the shapecast behaves when the shape is already penetrating a [collider](Collider)
     /// at the shape origin.
     ///
     /// If set to true **and** the shape is being cast in a direction where it will eventually stop penetrating,
-    /// the shape cast will not stop immediately, and will instead continue until another hit.\
-    /// If set to false, the shape cast will stop immediately and return the hit. This is the default.
+    /// the shapecast will not stop immediately, and will instead continue until another hit.\
+    /// If set to false, the shapecast will stop immediately and return the hit. This is the default.
     pub ignore_origin_penetration: bool,
+    /// If true, the shape caster ignores hits against its own [`Collider`]. This is the default.
+    pub ignore_self: bool,
     /// Rules that determine which colliders are taken into account in the query.
     pub query_filter: SpatialQueryFilter,
 }
@@ -103,7 +110,10 @@ impl Default for ShapeCaster {
     fn default() -> Self {
         Self {
             enabled: true,
-            shape: Collider::ball(0.0),
+            #[cfg(feature = "2d")]
+            shape: Collider::circle(0.0),
+            #[cfg(feature = "3d")]
+            shape: Collider::sphere(0.0),
             origin: Vector::ZERO,
             global_origin: Vector::ZERO,
             #[cfg(feature = "2d")]
@@ -114,11 +124,12 @@ impl Default for ShapeCaster {
             global_shape_rotation: 0.0,
             #[cfg(feature = "3d")]
             global_shape_rotation: Quaternion::IDENTITY,
-            direction: Vector::ZERO,
-            global_direction: Vector::ZERO,
+            direction: Dir::X,
+            global_direction: Dir::X,
             max_time_of_impact: Scalar::MAX,
             max_hits: 1,
             ignore_origin_penetration: false,
+            ignore_self: true,
             query_filter: SpatialQueryFilter::default(),
         }
     }
@@ -127,25 +138,30 @@ impl Default for ShapeCaster {
 impl ShapeCaster {
     /// Creates a new [`ShapeCaster`] with a given shape, origin, shape rotation and direction.
     #[cfg(feature = "2d")]
-    pub fn new(shape: Collider, origin: Vector, shape_rotation: Scalar, direction: Vector) -> Self {
+    pub fn new(
+        shape: impl Into<Collider>,
+        origin: Vector,
+        shape_rotation: Scalar,
+        direction: Dir,
+    ) -> Self {
         Self {
-            shape,
+            shape: shape.into(),
             origin,
             shape_rotation,
-            direction: direction.normalize(),
+            direction,
             ..default()
         }
     }
     #[cfg(feature = "3d")]
     /// Creates a new [`ShapeCaster`] with a given shape, origin, shape rotation and direction.
     pub fn new(
-        shape: Collider,
+        shape: impl Into<Collider>,
         origin: Vector,
         shape_rotation: Quaternion,
-        direction: Vector,
+        direction: Dir,
     ) -> Self {
         Self {
-            shape,
+            shape: shape.into(),
             origin,
             shape_rotation,
             direction,
@@ -160,19 +176,26 @@ impl ShapeCaster {
     }
 
     /// Sets the ray direction.
-    pub fn with_direction(mut self, direction: Vector) -> Self {
+    pub fn with_direction(mut self, direction: Dir) -> Self {
         self.direction = direction;
         self
     }
 
-    /// Controls how the shape cast behaves when the shape is already penetrating a [collider](Collider)
+    /// Controls how the shapecast behaves when the shape is already penetrating a [collider](Collider)
     /// at the shape origin.
     ///
     /// If set to true **and** the shape is being cast in a direction where it will eventually stop penetrating,
-    /// the shape cast will not stop immediately, and will instead continue until another hit.\
-    /// If set to false, the shape cast will stop immediately and return the hit. This is the default.
+    /// the shapecast will not stop immediately, and will instead continue until another hit.\
+    /// If set to false, the shapecast will stop immediately and return the hit. This is the default.
     pub fn with_ignore_origin_penetration(mut self, ignore: bool) -> Self {
         self.ignore_origin_penetration = ignore;
+        self
+    }
+
+    /// Sets if the shape caster should ignore hits against its own [`Collider`].
+    /// The default is true.
+    pub fn with_ignore_self(mut self, ignore: bool) -> Self {
+        self.ignore_self = ignore;
         self
     }
 
@@ -189,7 +212,7 @@ impl ShapeCaster {
     }
 
     /// Sets the shape caster's [query filter](SpatialQueryFilter) that controls which colliders
-    /// should be included or excluded by shape casts.
+    /// should be included or excluded by shapecasts.
     pub fn with_query_filter(mut self, query_filter: SpatialQueryFilter) -> Self {
         self.query_filter = query_filter;
         self
@@ -223,7 +246,7 @@ impl ShapeCaster {
     }
 
     /// Returns the global direction of the ray.
-    pub fn global_direction(&self) -> Vector {
+    pub fn global_direction(&self) -> Dir {
         self.global_direction
     }
 
@@ -245,12 +268,24 @@ impl ShapeCaster {
     }
 
     /// Sets the global direction of the ray.
-    pub(crate) fn set_global_direction(&mut self, global_direction: Vector) {
+    pub(crate) fn set_global_direction(&mut self, global_direction: Dir) {
         self.global_direction = global_direction;
     }
 
-    pub(crate) fn cast(&self, hits: &mut ShapeHits, query_pipeline: &SpatialQueryPipeline) {
+    pub(crate) fn cast(
+        &self,
+        caster_entity: Entity,
+        hits: &mut ShapeHits,
+        query_pipeline: &SpatialQueryPipeline,
+    ) {
+        let mut query_filter = self.query_filter.clone();
+
+        if self.ignore_self {
+            query_filter.excluded_entities.insert(caster_entity);
+        }
+
         hits.count = 0;
+
         let shape_rotation: Rotation;
         #[cfg(feature = "2d")]
         {
@@ -261,10 +296,9 @@ impl ShapeCaster {
             shape_rotation = Rotation::from(self.global_shape_rotation());
         }
 
-        let shape_isometry = utils::make_isometry(self.global_origin(), &shape_rotation);
-        let shape_direction = self.global_direction().into();
+        let shape_isometry = utils::make_isometry(self.global_origin(), shape_rotation);
+        let shape_direction = self.global_direction().adjust_precision().into();
 
-        let mut query_filter = self.query_filter.clone();
         while hits.count < self.max_hits {
             let pipeline_shape = query_pipeline.as_composite_shape(query_filter.clone());
             let mut visitor = TOICompositeShapeShapeBestFirstVisitor::new(
@@ -272,7 +306,7 @@ impl ShapeCaster {
                 &shape_isometry,
                 &shape_direction,
                 &pipeline_shape,
-                &**self.shape.get_shape(),
+                &**self.shape.shape_scaled(),
                 self.max_time_of_impact,
                 !self.ignore_origin_penetration,
             );
@@ -290,7 +324,7 @@ impl ShapeCaster {
                 if (hits.vector.len() as u32) < hits.count + 1 {
                     hits.vector.push(hit);
                 } else {
-                    hits.vector[0] = hit;
+                    hits.vector[hits.count as usize] = hit;
                 }
 
                 hits.count += 1;
@@ -305,7 +339,7 @@ impl ShapeCaster {
 /// Contains the hits of a shape cast by a [`ShapeCaster`]. The hits are in the order of time of impact.
 ///
 /// The maximum number of hits depends on the value of `max_hits` in [`ShapeCaster`]. By default only
-/// one hit is computed, as shape casting for many results can be expensive.
+/// one hit is computed, as shapecasting for many results can be expensive.
 ///
 /// ## Example
 ///
@@ -329,13 +363,14 @@ impl ShapeCaster {
 /// }
 /// ```
 #[derive(Component, Clone, Debug)]
+#[cfg_attr(feature = "serialize", derive(serde::Serialize, serde::Deserialize))]
 pub struct ShapeHits {
     pub(crate) vector: Vec<ShapeHitData>,
     pub(crate) count: u32,
 }
 
 impl ShapeHits {
-    /// Returns a slice over the shape cast hits.
+    /// Returns a slice over the shapecast hits.
     pub fn as_slice(&self) -> &[ShapeHitData] {
         &self.vector[0..self.count as usize]
     }
@@ -363,24 +398,38 @@ impl ShapeHits {
     }
 }
 
-/// Data related to a hit during a [shape cast](spatial_query#shape-casting).
-#[derive(Component, Clone, Copy, Debug)]
+impl MapEntities for ShapeHits {
+    fn map_entities<M: EntityMapper>(&mut self, entity_mapper: &mut M) {
+        for hit in &mut self.vector {
+            hit.map_entities(entity_mapper);
+        }
+    }
+}
+
+/// Data related to a hit during a [shapecast](spatial_query#shapecasting).
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serialize", derive(serde::Serialize, serde::Deserialize))]
 pub struct ShapeHitData {
-    /// The entity of the collider that was hit by the ray.
+    /// The entity of the collider that was hit by the shape.
     pub entity: Entity,
-    /// How long the shape travelled before the initial hit,
-    /// i.e. the distance between the origin and the point of intersection.
+    /// The time of impact (TOI), or how long the shape travelled before the initial hit.
     pub time_of_impact: Scalar,
+    /// The closest point on the collider that was hit by the shapecast, at the time of impact,
+    /// expressed in the local space of the collider shape.
+    pub point1: Vector,
     /// The closest point on the cast shape, at the time of impact,
     /// expressed in the local space of the cast shape.
-    pub point1: Vector,
-    /// The closest point on the collider that was hit by the shape cast, at the time of impact,
-    /// expressed in the local space of the collider shape.
     pub point2: Vector,
+    /// The outward normal on the collider that was hit by the shapecast, at the time of impact,
+    /// expressed in the local space of the collider shape.
+    pub normal1: Vector,
     /// The outward normal on the cast shape, at the time of impact,
     /// expressed in the local space of the cast shape.
-    pub normal1: Vector,
-    /// The outward normal on the collider that was hit by the shape cast, at the time of impact,
-    /// expressed in the local space of the collider shape.
     pub normal2: Vector,
+}
+
+impl MapEntities for ShapeHitData {
+    fn map_entities<M: EntityMapper>(&mut self, entity_mapper: &mut M) {
+        self.entity = entity_mapper.map_entity(self.entity);
+    }
 }

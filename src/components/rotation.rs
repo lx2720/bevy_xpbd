@@ -1,25 +1,33 @@
 //! Rotation components.
 
-use bevy::{math::DQuat, prelude::*};
-
 use std::ops::{Add, AddAssign, Sub, SubAssign};
 
-#[cfg(feature = "3d")]
-use nalgebra::Matrix3x1;
-
 use crate::prelude::*;
+use bevy::{math::DQuat, prelude::*};
 
 /// Radians
-#[cfg(feature = "2d")]
+#[cfg(all(feature = "2d", feature = "default-collider"))]
 pub(crate) type RotationValue = Scalar;
 /// Quaternion
-#[cfg(feature = "3d")]
+#[cfg(all(feature = "3d", feature = "default-collider"))]
 pub(crate) type RotationValue = Quaternion;
 
-/// The rotation of a body.
+/// The global rotation of a [rigid body](RigidBody) or a [collider](Collider).
 ///
-/// To speed up computation, the rotation is stored as the cosine and sine of the given angle in radians.
-/// You should use the associated methods to create, access and modify rotations with normal radians or degrees.
+/// The rotation is stored as the cosine and sine of an angle in radians.
+/// You should use the associated methods to create, access and modify rotations
+/// with normal radians or degrees.
+///
+/// ## Relation to `Transform` and `GlobalTransform`
+///
+/// [`Rotation`] is used for physics internally and kept in sync with `Transform`
+/// by the [`SyncPlugin`]. It rarely needs to be used directly in your own code, as `Transform` can still
+/// be used for almost everything. Using [`Rotation`] should only be required for managing rotations
+/// in systems running in the [`SubstepSchedule`], but if you prefer, you can also use [`Rotation`]
+/// for everything.
+///
+/// The reasons why the engine uses a separate [`Rotation`] component can be found
+/// [here](crate#why-are-there-separate-position-and-rotation-components).
 ///
 /// ## Example
 ///
@@ -34,6 +42,7 @@ pub(crate) type RotationValue = Quaternion;
 /// ```
 #[cfg(feature = "2d")]
 #[derive(Reflect, Clone, Copy, Component, Debug, PartialEq)]
+#[cfg_attr(feature = "serialize", derive(serde::Serialize, serde::Deserialize))]
 #[reflect(Component)]
 pub struct Rotation {
     /// The cosine of the rotation angle in radians.
@@ -42,7 +51,18 @@ pub struct Rotation {
     sin: Scalar,
 }
 
-/// The rotation of a body represented as a [`Quat`].
+/// The global rotation of a [rigid body](RigidBody) or a [collider](Collider).
+///
+/// ## Relation to `Transform` and `GlobalTransform`
+///
+/// [`Rotation`] is used for physics internally and kept in sync with `Transform`
+/// by the [`SyncPlugin`]. It rarely needs to be used directly in your own code, as `Transform` can still
+/// be used for almost everything. Using [`Rotation`] should only be required for managing rotations
+/// in systems running in the [`SubstepSchedule`], but if you prefer, you can also use [`Rotation`]
+/// for everything.
+///
+/// The reasons why the engine uses a separate [`Rotation`] component can be found
+/// [here](crate#why-are-there-separate-position-and-rotation-components).
 ///
 /// ## Example
 ///
@@ -58,6 +78,7 @@ pub struct Rotation {
 /// ```
 #[cfg(feature = "3d")]
 #[derive(Reflect, Clone, Copy, Component, Debug, Default, Deref, DerefMut, PartialEq)]
+#[cfg_attr(feature = "serialize", derive(serde::Serialize, serde::Deserialize))]
 #[reflect(Component)]
 pub struct Rotation(pub Quaternion);
 
@@ -121,7 +142,7 @@ impl Rotation {
         self.as_radians().to_degrees()
     }
 
-    /// Rotates the rotation by a given vector.
+    /// Rotates the given vector by `self`.
     pub fn rotate(&self, vec: Vector) -> Vector {
         Vector::new(
             vec.x * self.cos() - vec.y * self.sin(),
@@ -210,10 +231,49 @@ impl SubAssign<Self> for Rotation {
     }
 }
 
+impl core::ops::Mul<Vector> for Rotation {
+    type Output = Vector;
+
+    fn mul(self, vector: Vector) -> Self::Output {
+        self.rotate(vector)
+    }
+}
+
+impl core::ops::Mul<Dir> for Rotation {
+    type Output = Dir;
+
+    fn mul(self, direction: Dir) -> Self::Output {
+        Dir::new_unchecked(self.rotate(direction.adjust_precision()).f32())
+    }
+}
+
+impl core::ops::Mul<Vector> for &Rotation {
+    type Output = Vector;
+
+    fn mul(self, vector: Vector) -> Self::Output {
+        self.rotate(vector)
+    }
+}
+
+impl core::ops::Mul<Dir> for &Rotation {
+    type Output = Dir;
+
+    fn mul(self, direction: Dir) -> Self::Output {
+        Dir::new_unchecked(self.rotate(direction.adjust_precision()).f32())
+    }
+}
+
 #[cfg(feature = "2d")]
 impl From<Rotation> for Scalar {
     fn from(rot: Rotation) -> Self {
         rot.as_radians()
+    }
+}
+
+#[cfg(feature = "2d")]
+impl From<Scalar> for Rotation {
+    fn from(radians: Scalar) -> Self {
+        Self::from_radians(radians)
     }
 }
 
@@ -241,6 +301,12 @@ impl From<Transform> for Rotation {
 
 impl From<GlobalTransform> for Rotation {
     fn from(value: GlobalTransform) -> Self {
+        Self::from(value.compute_transform().rotation)
+    }
+}
+
+impl From<&GlobalTransform> for Rotation {
+    fn from(value: &GlobalTransform) -> Self {
         Self::from(value.compute_transform().rotation)
     }
 }
@@ -285,14 +351,8 @@ impl From<DQuat> for Rotation {
     }
 }
 
-#[cfg(feature = "3d")]
-impl From<Rotation> for Matrix3x1<Scalar> {
-    fn from(rot: Rotation) -> Self {
-        Matrix3x1::new(rot.x, rot.y, rot.z)
-    }
-}
-
 /// The previous rotation of a body. See [`Rotation`].
 #[derive(Reflect, Clone, Copy, Component, Debug, Default, Deref, DerefMut, PartialEq)]
+#[cfg_attr(feature = "serialize", derive(serde::Serialize, serde::Deserialize))]
 #[reflect(Component)]
 pub struct PreviousRotation(pub Rotation);

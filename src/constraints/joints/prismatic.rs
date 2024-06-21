@@ -1,12 +1,16 @@
 //! [`PrismaticJoint`] component.
 
 use crate::prelude::*;
-use bevy::prelude::*;
+use bevy::{
+    ecs::entity::{EntityMapper, MapEntities},
+    prelude::*,
+};
 
 /// A prismatic joint prevents relative movement of the attached bodies, except for translation along one `free_axis`.
 ///
 /// Prismatic joints can be useful for things like elevators, pistons, sliding doors and moving platforms.
 #[derive(Component, Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serialize", derive(serde::Serialize, serde::Deserialize))]
 pub struct PrismaticJoint {
     /// First entity constrained by the joint.
     pub entity1: Entity,
@@ -169,7 +173,7 @@ impl PrismaticJoint {
         }
         #[cfg(feature = "3d")]
         {
-            let axis2 = axis1.cross(Vector::Y);
+            let axis2 = axis1.any_orthogonal_vector();
             let axis3 = axis1.cross(axis2);
 
             delta_x += zero_distance_limit.compute_correction_along_axis(
@@ -248,3 +252,10 @@ impl PrismaticJoint {
 impl PositionConstraint for PrismaticJoint {}
 
 impl AngularConstraint for PrismaticJoint {}
+
+impl MapEntities for PrismaticJoint {
+    fn map_entities<M: EntityMapper>(&mut self, entity_mapper: &mut M) {
+        self.entity1 = entity_mapper.map_entity(self.entity1);
+        self.entity2 = entity_mapper.map_entity(self.entity2);
+    }
+}
